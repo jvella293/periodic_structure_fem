@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+from tqdm import tqdm
+
+from periodic_beam.assembly import AssembledModel, assemble_model
+from periodic_beam.moving_load import displacement_at_load, load_shape_vector, wrap_load_position
+from periodic_beam.newmark import NewmarkIntegrator
+
+
+@dataclass(frozen=True)
+class SolverOutput:
+    """Time histories from a moving-load simulation.
+
+    Attributes
+    ----------
+    t : numpy.ndarray
+        Output times (subsampled by ``dt_out``).
+    t_all : numpy.ndarray
+        Full time vector used during integration.
+    u_point : numpy.ndarray
+        Vertical displacement under the load at each output time.
+    model : AssembledModel
+        Assembled finite-element model used in the simulation.
+    """
+
+    t: np.ndarray
+    t_all: np.ndarray
+    u_point: np.ndarray
+    model: AssembledModel
+
+
+def solve_moving_load(
+    *,
+    ei: float,
+    damp_rail: float,
+    mass_per_length: float,
+    kv: float,
+    kt: float,
+    damp_rp: float,
+    element_length: float,
+    n_elements_per_cell: int,
+    n_nodes: int,
+    track_length: float,
+    dt: float,
+    velocity: float,
+    t_max: float,
+    omega_p: float = 0.0,
+    force: float = 1.0,
+    dt_out: float | None = None,
+    show_progress: bool = True,
+) -> SolverOutput:
+    """Simulate a moving point load on a periodic beam.
+
+    Assembles the beam model, integrates with Newmark's method, and
+    records vertical displacement at the load position.
+
+    Parameters
+    ----------
+    ei : float
+        Bending rigidity of the beam.
+    damp_rail : float
+        Rayleigh-type damping factor applied to beam bending stiffness.
+    mass_per_length : float
+        Mass per unit length of the beam.
+    kv : float
+        Vertical spring stiffness at cell boundaries.
+    kt : float
+        Rotational spring stiffness at cell boundaries.
+    damp_rp : float
+        Damping factor applied to spring stiffnesses.
+    element_length : float
+        Length of each beam element.
+    n_elements_per_cell : int
+        Number of beam elements per periodic cell.
+    n_nodes : int
+        Total number of nodes in the mesh.
+    track_length : float
+        Total length of one periodic track span.
+    dt : float
+        Integration time step.
+    velocity : float
+        Load travel speed along the track. If zero, the load is placed
+        at mid-span.
+    t_max : float
+        End time of the simulation.
+    omega_p : float, optional
+        Parametric excitation circular frequency (default 0).
+    force : float, optional
+        Moving point load magnitude [N] (default 1).
+    dt_out : float or None, optional
+        Output sampling interval. Defaults to ``dt``.
+    show_progress : bool, optional
+        If ``True``, display tqdm progress bars (default True).
+
+    Returns
+    -------
+    SolverOutput
+        Output time histories and the assembled model.
+    """
+    if dt_out is None:
+        dt_out = dt
+
+    model = assemble_model(
+        ei=ei,
+        damp_rail=damp_rail,
+        mass_per_length=mass_per_length,
+        kv=kv,
+        kt=kt,
+        damp_rp=damp_rp,
+        element_length=element_length,
+        n_elements_per_cell=n_elements_per_cell,
+        n_nodes=n_nodes,
+        track_length=track_length,
+        show_progress=show_progress,
+    )
+    integrator = NewmarkIntegrator.from_model(
+        mass=model.mass,
+        stiffness=model.stiffness,
+        damping=model.damping,
+        free_dofs=model.free_dofs,
+        dt=dt,
+    )
+    state = integrator.initial_state(model.n_dof)
+
+    t_all = np.arange(0.0, t_max + 0.5 * dt, dt)
+    output_stride = max(1, int(round(dt_out / dt)))
+    t_out: list[float] = []
+    u_point: list[float] = []
+
+    x_min = model.node_x.min()
+    x_max = track_length
+
+    for step_index, time in enumerate(
+        tqdm(t_all, desc="Newmark time integration", disable=not show_progress)
+    ):
+        if velocity != 0.0:
+            load_x = velocity * time
+        else:
+            load_x = 0.5 * track_length
+
+        load_x = wrap_load_position(load_x, x_min, x_max)
+        shape = load_shape_vector(model.node_x, load_x, x_max, model.n_dof)
+        state = integrator.step(
+            state=state,
+            load_shape=shape,
+            force=force,
+            omega_p=omega_p,
+            time=time,
+            mass=model.mass,
+            damping=model.damping,
+        )
+
+        if step_index % output_stride == 0:
+            t_out.append(time)
+            u_point.append(displacement_at_load(shape, state.displacement))
+
+    return SolverOutput(
+        t=np.asarray(t_out),
+        t_all=t_all,
+        u_point=np.asarray(u_point),
+        model=model,
+    )
