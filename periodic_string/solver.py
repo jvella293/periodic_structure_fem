@@ -40,6 +40,8 @@ def solve_moving_load(
     kv: float,
     phi: float,
     omega_ref: float,
+    contact_mass: float,
+    contact_stiffness: float,
     element_length: float,
     n_elements_per_cell: int,
     n_nodes: int,
@@ -52,10 +54,13 @@ def solve_moving_load(
     dt_out: float | None = None,
     show_progress: bool = True,
 ) -> SolverOutput:
-    """Simulate a moving point load on a periodic string.
+    """Simulate a moving point load on a periodic string with an
+    auxiliary moving-mass DOF (uncoupled in this step).
 
-    Assembles the string model, integrates with Newmark's method, and
-    records vertical displacement at the load position.
+    Assembles the string model with an extra DOF for the moving mass
+    ``z(t)``, integrates with Newmark's method, and records vertical
+    displacement at the load position. In this step the mass DOF is
+    not coupled to the string; the contact spring is added later.
 
     Parameters
     ----------
@@ -74,6 +79,10 @@ def solve_moving_load(
         Reference circular frequency [rad/s] at which the hysteretic
         support damping is converted to equivalent viscous damping,
         ``damp_rp = phi / omega_ref``.
+    contact_mass : float
+        Mass ``M`` of the moving oscillator [kg].
+    contact_stiffness : float
+        Contact spring stiffness ``K`` [N/m].
     element_length : float
         Length of each string element.
     n_elements_per_cell : int
@@ -85,8 +94,8 @@ def solve_moving_load(
     dt : float
         Integration time step.
     velocity : float
-        Load travel speed along the track. If zero, the load is placed
-        at mid-span.
+        Load travel speed along the catenary. 
+        If zero, the load is placed at mid-span.
     t_max : float
         End time of the simulation.
     omega_p : float, optional
@@ -114,6 +123,8 @@ def solve_moving_load(
         mass_per_length=mass_per_length,
         kv=kv,
         damp_rp=damp_rp,
+        contact_mass=contact_mass,
+        contact_stiffness=contact_stiffness,
         element_length=element_length,
         n_elements_per_cell=n_elements_per_cell,
         n_nodes=n_nodes,

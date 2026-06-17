@@ -15,10 +15,14 @@ V = 50.0
 F = 1.0  # moving point load magnitude [N]
 omega_p = 0.0 # moving oscillating point load frequency - if set to 0 constant moving load!
 
-# --- string (former rail) ---
+# --- string ---
 tension = 2.0e4
 damp_string = 0.0 # no string damping in the PDE
-m = 2.0
+m = 2.0 # mass per unit length of the string [kg/m] (CHECK! kg or kg/m)
+
+# --- contact oscillator ---
+M_mass = 5.0          # mass [kg], placeholder pantograph value
+K_contact = 1.0e8     # contact spring stiffness [N/m]
 
 # --- periodic section ---
 spacing = 10.0
@@ -54,6 +58,8 @@ def main() -> None:
         kv=Kv,
         phi=phi,
         omega_ref=omega_ref,
+        contact_mass=M_mass,
+        contact_stiffness=K_contact,
         element_length=element_length,
         n_elements_per_cell=n_elements_per_cell,
         n_nodes=n_nodes,
@@ -65,6 +71,10 @@ def main() -> None:
         force=F,
     )
     print(f"Springs: {output.model.spring_nodes.size}")
+
+    print(f"n_dof = {output.model.n_dof}, expected {n_nodes + 1}")
+    print(f"mass_dof = {output.model.mass_dof}, expected {n_nodes}")
+    print(f"M on mass DOF: {output.model.mass[output.model.mass_dof, output.model.mass_dof]}")
 
     plt.figure()
     plt.plot(output.t, output.u_point)

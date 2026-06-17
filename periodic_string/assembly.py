@@ -29,7 +29,8 @@ class AssembledModel:
     mass : scipy.sparse.csr_matrix
         Global mass matrix.
     stiffness : scipy.sparse.csr_matrix
-        Global stiffness matrix.
+        Global stiffness matrix (static part — excludes the time-varying
+        contact contribution).
     damping : scipy.sparse.csr_matrix
         Global damping matrix.
     free_dofs : numpy.ndarray
@@ -40,11 +41,13 @@ class AssembledModel:
     spring_nodes: np.ndarray
     catenary_length: float
     n_dof: int
+    n_string_dofs: int
+    mass_dof: int
+    contact_stiffness: float
     mass: sparse.csr_matrix
     stiffness: sparse.csr_matrix
     damping: sparse.csr_matrix
     free_dofs: np.ndarray
-
 
 def mesh_parameters(
     spacing: float,
@@ -143,16 +146,22 @@ def assemble_model(
     mass_per_length: float,
     kv: float,
     damp_rp: float,
+    contact_mass: float,
+    contact_stiffness: float,
     element_length: float,
     n_elements_per_cell: int,
     n_nodes: int,
     catenary_length: float,
     show_progress: bool = True,
 ) -> AssembledModel:
-    """Assemble global mass, stiffness, and damping matrices for the string.
+    """Assemble global mass, stiffness, and damping matrices for the string
+    with an extra DOF for the moving contact mass.
 
     String elements form a closed periodic loop. Vertical springs to
-    ground are placed at the first node of each cell.
+    ground are placed at the first node of each cell. One extra DOF
+    represents the vertical position ``z(t)`` of the moving mass; in
+    this step the mass DOF is uncoupled from the string (the contact
+    spring is applied later in the time loop).
 
     Parameters
     ----------
@@ -169,12 +178,17 @@ def assemble_model(
         Equivalent viscous time constant ``phi / omega_ref`` representing
         the loss factor of the complex support stiffness
         ``kv * (1 + i * phi)`` in the time domain.
+    contact_mass : float
+        Mass ``M`` of the moving oscillator [kg].
+    contact_stiffness : float
+        Contact spring stiffness ``K`` [N/m] between the moving mass and the string. 
+        Stored on the returned model for the time loop.
     element_length : float
         Length of each string element.
     n_elements_per_cell : int
         Number of string elements per periodic cell.
     n_nodes : int
-        Total number of nodes in the mesh.
+        Total number of string nodes in the mesh.
     catenary_length : float
         Total length of one periodic catenary span.
     show_progress : bool, optional
@@ -185,7 +199,10 @@ def assemble_model(
     AssembledModel
         Assembled sparse global model ready for time integration.
     """
-    n_dof = n_nodes
+    n_string_dofs = n_nodes
+    n_dof = n_string_dofs + 1  # extra DOF for the moving mass
+    mass_dof = n_string_dofs
+
     node_x = np.arange(n_nodes, dtype=float) * element_length
     spring_nodes = np.arange(n_nodes, step=n_elements_per_cell, dtype=int)
 
@@ -213,6 +230,10 @@ def assemble_model(
         k_triplets.append((kv, spring_node, spring_node))
         c_triplets.append((ck, spring_node, spring_node))
 
+    # Moving mass: just M on the diagonal of the mass matrix.
+    # No stiffness or damping coupling yet — contact is applied in the time loop.
+    m_triplets.append((contact_mass, mass_dof, mass_dof))
+
     stiffness = _triplets_to_csr(k_triplets, n_dof)
     damping = _triplets_to_csr(c_triplets, n_dof)
     mass = _triplets_to_csr(m_triplets, n_dof)
@@ -225,6 +246,9 @@ def assemble_model(
         spring_nodes=spring_nodes,
         catenary_length=catenary_length,
         n_dof=n_dof,
+        n_string_dofs=n_string_dofs,
+        mass_dof=mass_dof,
+        contact_stiffness=contact_stiffness,
         mass=mass,
         stiffness=stiffness,
         damping=damping,
