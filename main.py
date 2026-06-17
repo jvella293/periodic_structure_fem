@@ -11,7 +11,7 @@ from periodic_string.solver import solve_moving_load
 
 # --- time integration ---
 dt = 1.0e-4
-V = 50.0
+V = 150.0
 
 # --- string ---
 tension = 2.0e4
@@ -19,8 +19,8 @@ damp_string = 0.0 # no string damping in the PDE
 m = 1.1 # mass per unit length of the string [kg/m] (CHECK! kg or kg/m)
 
 # --- contact oscillator ---
-M_mass = 5.0          # mass [kg], placeholder pantograph value
-K_contact = 1.0e4     # contact spring stiffness [N/m]
+M_mass = 50.0          # mass [kg], placeholder pantograph value
+K_contact = 1.0e8     # contact spring stiffness [N/m]
 
 # --- periodic section ---
 spacing = 10.0
@@ -37,7 +37,7 @@ element_length, n_elements_per_cell, n_nodes, catenary_length = mesh_parameters(
     spacing, element_length_requested, n_cells
 )
 #t_max = 0.7 * n_cells * spacing / V
-t_max = 2.0 
+t_max = 10.0 
 
 def main() -> None:
     """Run the default moving-load simulation and plot displacement."""

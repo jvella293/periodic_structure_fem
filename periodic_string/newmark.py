@@ -29,15 +29,19 @@ class NewmarkState:
 @dataclass(frozen=True)
 class NewmarkIntegrator:
     """Average-acceleration Newmark integrator for linear dynamics
-    with a time-varying rank-1 contact-stiffness contribution.
+    with a time-varying rank-1 contact-stiffness contribution, solve
+    via Sherman-Morrison
 
-    The static part of the effective stiffness ``K_static + a1 * C + a0 * M`` 
-    is assembled once and stored as a sparse matrix. 
-    At each step the contact contribution ``K * d(t) d(t).T`` 
-    is added and the resulting system is factorisedand solved.
+    The static effective stiffness ``A = K_static + a1 * C + a0 * M``
+    is assembled and LU-factorised once at construction. Each step
+    folds in the time-varying contact contribution ``K * d(t) d(t).T``
+    using the Sherman-Morrison identity, costing only two
+    back-substitutions per step rather than a full re-factorisation.
 
     Uses ``beta = 0.25`` and ``gamma = 0.5`` (unconditionally stable
-    for linear systems).
+    for linear systems); the time-varying rank-1 update
+    introduces a small parametric perturbation but is benign in
+    practice for slowly-moving contact points).
 
     Attributes
     ----------
@@ -49,8 +53,9 @@ class NewmarkIntegrator:
         Newmark gamma parameter.
     a0, a1, a2, a3, a4, a5 : float
         Newmark integration coefficients.
-    static_equivalent_stiffness : scipy.sparse.csc_matrix or None
-        Static effective stiffness on free DOFs.
+    static_factorization : scipy.sparse.linalg.splu or None
+        Pre-computed LU factorisation of the static effective
+        stiffness ``A`` on free DOFs.
     free_dofs : numpy.ndarray or None
         Indices of unconstrained degrees of freedom.
     """
@@ -64,7 +69,7 @@ class NewmarkIntegrator:
     a3: float = 0.0
     a4: float = 0.0
     a5: float = 0.0
-    static_equivalent_stiffness: sparse.csc_matrix | None = None
+    static_factorization: splu | None = None
     free_dofs: np.ndarray | None = None
 
     @classmethod
@@ -78,9 +83,9 @@ class NewmarkIntegrator:
     ) -> NewmarkIntegrator:
         """Build an integrator and assemble the static effective stiffness.
 
-        The static effective stiffness ``K + a1 * C + a0 * M`` is stored
-        on free DOFs; the time-varying contact contribution is added
-        and factorised inside :meth:`step`.
+        The static effective stiffness ``A = K + a1 * C + a0 * M`` is
+        LU-factorised once on free DOFs. The factorisation is reused at
+        every time step inside :meth:`step` via Sherman-Morrison.
 
         Parameters
         ----------
@@ -111,6 +116,7 @@ class NewmarkIntegrator:
 
         static_equivalent = stiffness + a1 * damping + a0 * mass
         static_equivalent_free = static_equivalent[free_dofs, :][:, free_dofs].tocsr()
+        static_factorization = splu(static_equivalent_free)
 
         return cls(
             dt=dt,
@@ -122,7 +128,7 @@ class NewmarkIntegrator:
             a3=a3,
             a4=a4,
             a5=a5,
-            static_equivalent_stiffness=static_equivalent_free,
+            static_factorization=static_factorization,
             free_dofs=free_dofs,
         )
 
@@ -154,13 +160,16 @@ class NewmarkIntegrator:
         mass: sparse.csr_matrix,
         damping: sparse.csr_matrix,
     ) -> NewmarkState:
-        """Advance the state by one Newmark time step.
+        """Advance the state by one Newmark time step via Sherman-Morrison.
 
-        The external load is a constant force vector ``external_force``
-        (e.g. gravity applied to the moving-mass DOF). The contact
-        coupling between the moving mass and the string at the current
-        load position is added as a rank-1 update
-        ``contact_stiffness * d d.T``, where ``d = contact_direction``.
+        The static effective stiffness ``A`` is already factorised. The
+        rank-1 contact update ``K * d d.T`` is folded in cheaply:
+
+            (A + K d d.T)^-1 b = A^-1 b
+                                 - (K * (A^-1 d) * (d.T @ A^-1 b))
+                                 / (1 + K * d.T @ A^-1 d)
+
+        Costs two back-substitutions per step.
 
         Parameters
         ----------
@@ -183,24 +192,25 @@ class NewmarkIntegrator:
             Updated displacement, velocity, and acceleration.
         """
         free = self.free_dofs
-        d = contact_direction
-        d_free = d[free]
-
-        # Rank-1 contact stiffness update on free DOFs.
-        # Built as a sparse outer product to keep matrix arithmetic sparse.
-        d_sp = sparse.csr_matrix(d_free.reshape(-1, 1))
-        contact_block = contact_stiffness * (d_sp @ d_sp.T)
-        equivalent_free = (self.static_equivalent_stiffness + contact_block).tocsc()
-        factorization = splu(equivalent_free)
+        d_free = contact_direction[free]
 
         rhs = (
             external_force
             + mass    @ (self.a0 * state.displacement + self.a2 * state.velocity + self.a3 * state.acceleration)
             + damping @ (self.a1 * state.displacement + self.a4 * state.velocity + self.a5 * state.acceleration)
         )
+        b_free = rhs[free]
+
+        # Two back-substitutions: A^-1 b and A^-1 d.
+        y = self.static_factorization.solve(b_free)
+        w = self.static_factorization.solve(d_free)
+
+        # Sherman-Morrison correction.
+        denom = 1.0 + contact_stiffness * (d_free @ w)
+        coef = contact_stiffness * (d_free @ y) / denom
 
         displacement = np.zeros_like(state.displacement)
-        displacement[free] = factorization.solve(rhs[free])
+        displacement[free] = y - coef * w
 
         velocity = self.a1 * (displacement - state.displacement) - self.a4 * state.velocity - self.a5 * state.acceleration
         acceleration = self.a0 * (displacement - state.displacement) - self.a2 * state.velocity - self.a3 * state.acceleration
