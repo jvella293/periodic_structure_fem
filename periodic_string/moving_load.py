@@ -34,11 +34,11 @@ def load_shape_vector(
     track_length: float,
     n_dof: int,
 ) -> np.ndarray:
-    """Evaluate Hermite shape functions for a unit vertical point load.
+    """Evaluate linear shape functions for a unit transverse point load.
 
-    The load is applied at position ``x`` on the beam mesh. Shape
-    function values are written to the vertical and rotational DOFs of
-    the two nodes of the containing element.
+    The load is applied at position ``x`` on the string mesh. Shape
+    function values are written to the transverse DOFs of the two nodes
+    of the containing element.
 
     Parameters
     ----------
@@ -55,8 +55,7 @@ def load_shape_vector(
     -------
     numpy.ndarray
         Shape vector of length ``n_dof``; nonzero only on the element
-        containing ``x``. Vertical entries sum to unity when the load
-        lies in a single element interior.
+        containing ``x``. Entries sum to unity within an element.
     """
     shape = np.zeros(n_dof)
     n_nodes = node_x.size
@@ -72,15 +71,8 @@ def load_shape_vector(
 
         length = x2 - x1
         fact = (x - x1) / length
-        n1 = 1.0 - 3.0 * fact**2 + 2.0 * fact**3
-        n2 = length * fact - 2.0 * length * fact**2 + length * fact**3
-        n3 = 3.0 * fact**2 - 2.0 * fact**3
-        n4 = -length * fact**2 + length * fact**3
-
-        shape[2 * node_left] = n1
-        shape[2 * node_left + 1] = n2
-        shape[2 * node_right] = n3
-        shape[2 * node_right + 1] = n4
+        shape[node_left] = 1.0 - fact
+        shape[node_right] = fact
         return shape
 
     return shape

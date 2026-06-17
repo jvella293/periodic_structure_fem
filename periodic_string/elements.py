@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 
-def beam_stiffness(ei: float, length: float) -> np.ndarray:
+def string_stiffness(tension: float, length: float) -> np.ndarray:
     """Local stiffness matrix for a 2-node linear-string element.
 
     Parameters

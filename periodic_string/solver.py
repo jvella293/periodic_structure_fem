@@ -52,29 +52,27 @@ def solve_moving_load(
     dt_out: float | None = None,
     show_progress: bool = True,
 ) -> SolverOutput:
-    """Simulate a moving point load on a periodic beam.
+    """Simulate a moving point load on a periodic string.
 
-    Assembles the beam model, integrates with Newmark's method, and
+    Assembles the string model, integrates with Newmark's method, and
     records vertical displacement at the load position.
 
     Parameters
     ----------
-    ei : float
-        Bending rigidity of the beam.
-    damp_rail : float
-        Rayleigh-type damping factor applied to beam bending stiffness.
+    tension : float
+        Tensile force in the string.
+    damp_string : float
+        Rayleigh-type damping factor applied to string stiffness.
     mass_per_length : float
-        Mass per unit length of the beam.
+        Mass per unit length of the string.
     kv : float
         Vertical spring stiffness at cell boundaries.
-    kt : float
-        Rotational spring stiffness at cell boundaries.
     damp_rp : float
         Damping factor applied to spring stiffnesses.
     element_length : float
-        Length of each beam element.
+        Length of each string element.
     n_elements_per_cell : int
-        Number of beam elements per periodic cell.
+        Number of string elements per periodic cell.
     n_nodes : int
         Total number of nodes in the mesh.
     track_length : float
@@ -104,11 +102,10 @@ def solve_moving_load(
         dt_out = dt
 
     model = assemble_model(
-        ei=ei,
-        damp_rail=damp_rail,
+        tension=tension,
+        damp_string=damp_string,
         mass_per_length=mass_per_length,
         kv=kv,
-        kt=kt,
         damp_rp=damp_rp,
         element_length=element_length,
         n_elements_per_cell=n_elements_per_cell,

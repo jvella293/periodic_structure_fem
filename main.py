@@ -1,5 +1,5 @@
 # Created by RvL
-"""Moving load on a periodic Euler-Bernoulli beam."""
+"""Moving load on a periodic taut string."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ V = 20.0
 F = 1.0  # moving point load magnitude [N]
 omega_p = 0.0 # moving oscillating point load frequency - if set to 0 constant moving load!
 
-# --- beam (former rail) ---
-EI = 25e9
-damp_rail = 7.1429e-4
+# --- string (former rail) ---
+tension = 1.0e6
+damp_string = 7.1429e-4
 m = 1400.0
 
 # --- periodic section ---
@@ -26,7 +26,6 @@ element_length_requested = 0.05
 
 # --- vertical and rotational springs at section boundaries ---
 Kv = spacing * 28e6
-Kt = 1e9
 c_d = 20e3
 damp_rp = c_d * spacing / Kv
 
@@ -48,11 +47,10 @@ def main() -> None:
     )
 
     output = solve_moving_load(
-        ei=EI,
-        damp_rail=damp_rail,
+        tension=tension,
+        damp_string=damp_string,
         mass_per_length=m,
         kv=Kv,
-        kt=Kt,
         damp_rp=damp_rp,
         element_length=element_length,
         n_elements_per_cell=n_elements_per_cell,

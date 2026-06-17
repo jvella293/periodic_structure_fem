@@ -7,14 +7,14 @@ from scipy import sparse
 from tqdm import tqdm
 
 from periodic_string.elements import (
-    beam_mass,
-    beam_stiffness,
+    string_mass,
+    string_stiffness,
 )
 
 
 @dataclass(frozen=True)
 class AssembledModel:
-    """Global finite-element model of a periodic beam on springs.
+    """Global finite-element model of a periodic string on springs.
 
     Attributes
     ----------
@@ -61,7 +61,7 @@ def mesh_parameters(
     spacing : float
         Length of one periodic cell.
     element_length_requested : float
-        Target beam element length before rounding.
+        Target string element length before rounding.
     n_cells : int
         Number of periodic cells along the track.
 
@@ -70,7 +70,7 @@ def mesh_parameters(
     element_length : float
         Actual element length after adjustment.
     n_elements_per_cell : int
-        Number of beam elements per cell.
+        Number of string elements per cell.
     n_nodes : int
         Total number of nodes in the mesh.
     track_length : float
@@ -81,24 +81,6 @@ def mesh_parameters(
     n_nodes = n_cells * n_elements_per_cell
     track_length = n_cells * spacing
     return element_length, n_elements_per_cell, n_nodes, track_length
-
-
-def _dof_indices(node_index: int) -> tuple[int, int]:
-    """Map a node index to its vertical and rotational DOF indices.
-
-    Parameters
-    ----------
-    node_index : int
-        Zero-based node index.
-
-    Returns
-    -------
-    vertical_dof : int
-        Global index of the vertical displacement DOF.
-    rotational_dof : int
-        Global index of the rotational DOF.
-    """
-    return 2 * node_index, 2 * node_index + 1
 
 
 def _add_matrix(
@@ -156,11 +138,10 @@ def _triplets_to_csr(triplets: list[tuple[float, int, int]], n_dof: int) -> spar
 
 def assemble_model(
     *,
-    ei: float,
-    damp_rail: float,
+    tension: float,
+    damp_string: float,
     mass_per_length: float,
     kv: float,
-    kt: float,
     damp_rp: float,
     element_length: float,
     n_elements_per_cell: int,
@@ -168,29 +149,27 @@ def assemble_model(
     track_length: float,
     show_progress: bool = True,
 ) -> AssembledModel:
-    """Assemble global mass, stiffness, and damping matrices for the beam.
+    """Assemble global mass, stiffness, and damping matrices for the string.
 
-    Beam elements form a closed periodic loop. Vertical and rotational
-    springs to ground are placed at the first node of each cell.
+    String elements form a closed periodic loop. Vertical springs to
+    ground are placed at the first node of each cell.
 
     Parameters
     ----------
-    ei : float
-        Bending rigidity of the beam.
-    damp_rail : float
-        Rayleigh-type damping factor applied to beam bending stiffness.
+    tension : float
+        Axial tension carried by the string.
+    damp_string : float
+        Rayleigh-type damping factor applied to string stiffness.
     mass_per_length : float
-        Mass per unit length of the beam.
+        Mass per unit length of the string.
     kv : float
         Vertical spring stiffness at cell boundaries.
-    kt : float
-        Rotational spring stiffness at cell boundaries.
     damp_rp : float
-        Damping factor applied to spring stiffnesses.
+        Damping factor applied to spring stiffness.
     element_length : float
-        Length of each beam element.
+        Length of each string element.
     n_elements_per_cell : int
-        Number of beam elements per periodic cell.
+        Number of string elements per periodic cell.
     n_nodes : int
         Total number of nodes in the mesh.
     track_length : float
@@ -203,13 +182,12 @@ def assemble_model(
     AssembledModel
         Assembled sparse global model ready for time integration.
     """
-    n_dof = 2 * n_nodes
+    n_dof = n_nodes
     node_x = np.arange(n_nodes, dtype=float) * element_length
     spring_nodes = np.arange(n_nodes, step=n_elements_per_cell, dtype=int)
 
-    cei = ei * damp_rail
+    c_tension = tension * damp_string
     ck = kv * damp_rp
-    ckt = kt * damp_rp
 
     k_triplets: list[tuple[float, int, int]] = []
     c_triplets: list[tuple[float, int, int]] = []
@@ -217,24 +195,20 @@ def assemble_model(
 
     for element_index in tqdm(
         range(n_nodes),
-        desc="Assembling beam elements",
+        desc="Assembling string elements",
         disable=not show_progress,
     ):
         node_a = element_index
         node_b = (element_index + 1) % n_nodes
-        dofs = [*_dof_indices(node_a), *_dof_indices(node_b)]
+        dofs = [node_a, node_b]
 
-        _add_matrix(k_triplets, beam_stiffness(ei, element_length), dofs)
-        _add_matrix(c_triplets, beam_stiffness(cei, element_length), dofs)
-        _add_matrix(m_triplets, beam_mass(mass_per_length, element_length), dofs)
+        _add_matrix(k_triplets, string_stiffness(tension, element_length), dofs)
+        _add_matrix(c_triplets, string_stiffness(c_tension, element_length), dofs)
+        _add_matrix(m_triplets, string_mass(mass_per_length, element_length), dofs)
 
     for spring_node in spring_nodes:
-        vertical_dof = 2 * spring_node
-        rotational_dof = 2 * spring_node + 1
-        k_triplets.append((kv, vertical_dof, vertical_dof))
-        c_triplets.append((ck, vertical_dof, vertical_dof))
-        k_triplets.append((kt, rotational_dof, rotational_dof))
-        c_triplets.append((ckt, rotational_dof, rotational_dof))
+        k_triplets.append((kv, spring_node, spring_node))
+        c_triplets.append((ck, spring_node, spring_node))
 
     stiffness = _triplets_to_csr(k_triplets, n_dof)
     damping = _triplets_to_csr(c_triplets, n_dof)

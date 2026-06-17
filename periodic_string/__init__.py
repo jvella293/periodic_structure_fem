@@ -1,6 +1,6 @@
-"""Periodic Euler-Bernoulli beam with moving load.
+"""Periodic taut string with moving load.
 
-This package assembles a periodic beam on elastic supports and
+This package assembles a periodic string on elastic supports and
 integrates its response to a moving harmonic point load using
 Newmark time integration.
 """
