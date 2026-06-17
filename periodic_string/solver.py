@@ -34,16 +34,15 @@ class SolverOutput:
 
 def solve_moving_load(
     *,
-    ei: float,
-    damp_rail: float,
+    tension: float,
+    damp_string: float,
     mass_per_length: float,
     kv: float,
-    kt: float,
     damp_rp: float,
     element_length: float,
     n_elements_per_cell: int,
     n_nodes: int,
-    track_length: float,
+    catenary_length: float,
     dt: float,
     velocity: float,
     t_max: float,
@@ -75,8 +74,8 @@ def solve_moving_load(
         Number of string elements per periodic cell.
     n_nodes : int
         Total number of nodes in the mesh.
-    track_length : float
-        Total length of one periodic track span.
+    catenary_length : float
+        Total length of one periodic catenary span.
     dt : float
         Integration time step.
     velocity : float
@@ -110,7 +109,7 @@ def solve_moving_load(
         element_length=element_length,
         n_elements_per_cell=n_elements_per_cell,
         n_nodes=n_nodes,
-        track_length=track_length,
+        catenary_length=catenary_length,
         show_progress=show_progress,
     )
     integrator = NewmarkIntegrator.from_model(
@@ -128,7 +127,7 @@ def solve_moving_load(
     u_point: list[float] = []
 
     x_min = model.node_x.min()
-    x_max = track_length
+    x_max = catenary_length
 
     for step_index, time in enumerate(
         tqdm(t_all, desc="Newmark time integration", disable=not show_progress)
@@ -136,7 +135,7 @@ def solve_moving_load(
         if velocity != 0.0:
             load_x = velocity * time
         else:
-            load_x = 0.5 * track_length
+            load_x = 0.5 * catenary_length
 
         load_x = wrap_load_position(load_x, x_min, x_max)
         shape = load_shape_vector(model.node_x, load_x, x_max, model.n_dof)

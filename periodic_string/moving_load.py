@@ -31,7 +31,7 @@ def wrap_load_position(x: float, x_min: float, x_max: float) -> float:
 def load_shape_vector(
     node_x: np.ndarray,
     x: float,
-    track_length: float,
+    catenary_length: float,
     n_dof: int,
 ) -> np.ndarray:
     """Evaluate linear shape functions for a unit transverse point load.
@@ -46,8 +46,8 @@ def load_shape_vector(
         Longitudinal coordinate of each node.
     x : float
         Load position along the track.
-    track_length : float
-        Total length of one periodic track span.
+    catenary_length : float
+        Total length of one periodic catenary span.
     n_dof : int
         Total number of global degrees of freedom.
 
@@ -64,7 +64,7 @@ def load_shape_vector(
         node_left = element_index
         node_right = (element_index + 1) % n_nodes
         x1 = node_x[node_left]
-        x2 = track_length if node_right == 0 else node_x[node_right]
+        x2 = catenary_length if node_right == 0 else node_x[node_right]
 
         if x < x1 or x >= x2:
             continue

@@ -25,6 +25,7 @@ def string_stiffness(tension: float, length: float) -> np.ndarray:
         ]
     )
 
+
 def string_mass(mass_per_length: float, length: float) -> np.ndarray:
     """Consistent mass matrix for a 2-node taut-string element.
 

@@ -30,7 +30,7 @@ c_d = 20e3
 damp_rp = c_d * spacing / Kv
 
 # --- derived mesh ---
-element_length, n_elements_per_cell, n_nodes, track_length = mesh_parameters(
+element_length, n_elements_per_cell, n_nodes, catenary_length = mesh_parameters(
     spacing, element_length_requested, n_cells
 )
 t_max = 0.7 * n_cells * spacing / V
@@ -55,7 +55,7 @@ def main() -> None:
         element_length=element_length,
         n_elements_per_cell=n_elements_per_cell,
         n_nodes=n_nodes,
-        track_length=track_length,
+        catenary_length=catenary_length,
         dt=dt,
         velocity=V,
         t_max=t_max,

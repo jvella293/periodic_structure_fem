@@ -21,11 +21,11 @@ class AssembledModel:
     node_x : numpy.ndarray
         Longitudinal coordinate of each node.
     spring_nodes : numpy.ndarray
-        Node indices where vertical and rotational springs are attached.
-    track_length : float
-        Total length of one periodic track span.
+        Node indices where vertical springs are attached.
+    catenary_length : float
+        Total length of one periodic catenary span.
     n_dof : int
-        Number of global degrees of freedom (``2 * n_nodes``).
+        Number of global degrees of freedom (``n_nodes``).
     mass : scipy.sparse.csr_matrix
         Global mass matrix.
     stiffness : scipy.sparse.csr_matrix
@@ -38,7 +38,7 @@ class AssembledModel:
 
     node_x: np.ndarray
     spring_nodes: np.ndarray
-    track_length: float
+    catenary_length: float
     n_dof: int
     mass: sparse.csr_matrix
     stiffness: sparse.csr_matrix
@@ -73,14 +73,14 @@ def mesh_parameters(
         Number of string elements per cell.
     n_nodes : int
         Total number of nodes in the mesh.
-    track_length : float
-        Total track length (``n_cells * spacing``).
+    catenary_length : float
+        Total length of one periodic catenary span (``n_cells * spacing``).
     """
     n_elements_per_cell = max(1, round(spacing / element_length_requested))
     element_length = spacing / n_elements_per_cell
     n_nodes = n_cells * n_elements_per_cell
-    track_length = n_cells * spacing
-    return element_length, n_elements_per_cell, n_nodes, track_length
+    catenary_length = n_cells * spacing
+    return element_length, n_elements_per_cell, n_nodes, catenary_length
 
 
 def _add_matrix(
@@ -146,7 +146,7 @@ def assemble_model(
     element_length: float,
     n_elements_per_cell: int,
     n_nodes: int,
-    track_length: float,
+    catenary_length: float,
     show_progress: bool = True,
 ) -> AssembledModel:
     """Assemble global mass, stiffness, and damping matrices for the string.
@@ -172,8 +172,8 @@ def assemble_model(
         Number of string elements per periodic cell.
     n_nodes : int
         Total number of nodes in the mesh.
-    track_length : float
-        Total length of one periodic track span.
+    catenary_length : float
+        Total length of one periodic catenary span.
     show_progress : bool, optional
         If ``True``, display tqdm progress bars during assembly.
 
@@ -220,7 +220,7 @@ def assemble_model(
     return AssembledModel(
         node_x=node_x,
         spring_nodes=spring_nodes,
-        track_length=track_length,
+        catenary_length=catenary_length,
         n_dof=n_dof,
         mass=mass,
         stiffness=stiffness,
