@@ -5,9 +5,9 @@ from dataclasses import dataclass
 import numpy as np
 from tqdm import tqdm
 
-from periodic_beam.assembly import AssembledModel, assemble_model
-from periodic_beam.moving_load import displacement_at_load, load_shape_vector, wrap_load_position
-from periodic_beam.newmark import NewmarkIntegrator
+from periodic_string.assembly import AssembledModel, assemble_model
+from periodic_string.moving_load import displacement_at_load, load_shape_vector, wrap_load_position
+from periodic_string.newmark import NewmarkIntegrator
 
 
 @dataclass(frozen=True)

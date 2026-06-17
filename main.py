@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import matplotlib.pyplot as plt
 
-from periodic_beam.assembly import mesh_parameters
-from periodic_beam.solver import solve_moving_load
+from periodic_string.assembly import mesh_parameters
+from periodic_string.solver import solve_moving_load
 
 # --- time integration ---
 dt = 0.005

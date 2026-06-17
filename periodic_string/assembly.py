@@ -6,7 +6,7 @@ import numpy as np
 from scipy import sparse
 from tqdm import tqdm
 
-from periodic_beam.elements import (
+from periodic_string.elements import (
     beam_mass,
     beam_stiffness,
 )
