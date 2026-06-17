@@ -4,30 +4,31 @@
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
+import numpy as np
 
 from periodic_string.assembly import mesh_parameters
 from periodic_string.solver import solve_moving_load
 
 # --- time integration ---
-dt = 0.005
-V = 20.0
+dt = 0.0005
+V = 50.0
 F = 1.0  # moving point load magnitude [N]
 omega_p = 0.0 # moving oscillating point load frequency - if set to 0 constant moving load!
 
 # --- string (former rail) ---
-tension = 1.0e6
-damp_string = 7.1429e-4
-m = 1400.0
+tension = 2.0e4
+damp_string = 0.0 # no string damping in the PDE
+m = 2.0
 
 # --- periodic section ---
-spacing = 16.0
+spacing = 10.0
 n_cells = 50
 element_length_requested = 0.05
 
-# --- vertical and rotational springs at section boundaries ---
-Kv = spacing * 28e6
-c_d = 20e3
-damp_rp = c_d * spacing / Kv
+# --- vertical supports at periodic positions ---
+Kv =  4.0e3                                   # discrete support stiffness [N/m], = ek
+phi = 1.0e-4                                  # support loss factor
+omega_ref = 2.0 * np.pi * V / spacing         # support-passing frequency [rad/s]
 
 # --- derived mesh ---
 element_length, n_elements_per_cell, n_nodes, catenary_length = mesh_parameters(
@@ -51,7 +52,8 @@ def main() -> None:
         damp_string=damp_string,
         mass_per_length=m,
         kv=Kv,
-        damp_rp=damp_rp,
+        phi=phi,
+        omega_ref=omega_ref,
         element_length=element_length,
         n_elements_per_cell=n_elements_per_cell,
         n_nodes=n_nodes,

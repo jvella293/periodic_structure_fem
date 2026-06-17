@@ -38,7 +38,8 @@ def solve_moving_load(
     damp_string: float,
     mass_per_length: float,
     kv: float,
-    damp_rp: float,
+    phi: float,
+    omega_ref: float,
     element_length: float,
     n_elements_per_cell: int,
     n_nodes: int,
@@ -61,13 +62,18 @@ def solve_moving_load(
     tension : float
         Tensile force in the string.
     damp_string : float
-        Rayleigh-type damping factor applied to string stiffness.
+        Rayleigh-type damping factor on the string stiffness. 
+        Set to 0 for an undamped string as in the model equation.
     mass_per_length : float
         Mass per unit length of the string.
     kv : float
         Vertical spring stiffness at cell boundaries.
-    damp_rp : float
-        Damping factor applied to spring stiffnesses.
+    phi : float
+        Loss factor of the complex support stiffness ``kv * (1 + i * phi)``.
+    omega_ref : float
+        Reference circular frequency [rad/s] at which the hysteretic
+        support damping is converted to equivalent viscous damping,
+        ``damp_rp = phi / omega_ref``.
     element_length : float
         Length of each string element.
     n_elements_per_cell : int
@@ -99,6 +105,8 @@ def solve_moving_load(
     """
     if dt_out is None:
         dt_out = dt
+
+    damp_rp = phi / omega_ref
 
     model = assemble_model(
         tension=tension,
