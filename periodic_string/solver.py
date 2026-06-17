@@ -6,7 +6,7 @@ import numpy as np
 from tqdm import tqdm
 
 from periodic_string.assembly import AssembledModel, assemble_model
-from periodic_string.moving_load import displacement_at_load, load_shape_vector, wrap_load_position
+from periodic_string.moving_load import displacement_at_load, load_shape_vector, wrap_load_position, contact_direction
 from periodic_string.newmark import NewmarkIntegrator
 
 
@@ -21,7 +21,11 @@ class SolverOutput:
     t_all : numpy.ndarray
         Full time vector used during integration.
     u_point : numpy.ndarray
-        Vertical displacement under the load at each output time.
+        Vertical displacement of the string at the contact point ``w_c(t) = N(t).T @ w``
+    z_mass : numpy.ndarray
+        Vertical position of the moving mass, ``z(t)``.
+    contact_force : numpy.ndarray
+        Contact spring force ``F(t) = K * (z(t) - w_c(t))``.
     model : AssembledModel
         Assembled finite-element model used in the simulation.
     """
@@ -29,6 +33,8 @@ class SolverOutput:
     t: np.ndarray
     t_all: np.ndarray
     u_point: np.ndarray
+    z_mass: np.ndarray
+    contact_force: np.ndarray
     model: AssembledModel
 
 
@@ -49,18 +55,17 @@ def solve_moving_load(
     dt: float,
     velocity: float,
     t_max: float,
-    omega_p: float = 0.0,
-    force: float = 1.0,
     dt_out: float | None = None,
     show_progress: bool = True,
 ) -> SolverOutput:
     """Simulate a moving point load on a periodic string with an
     auxiliary moving-mass DOF (uncoupled in this step).
 
-    Assembles the string model with an extra DOF for the moving mass
-    ``z(t)``, integrates with Newmark's method, and records vertical
-    displacement at the load position. In this step the mass DOF is
-    not coupled to the string; the contact spring is added later.
+    Assembles the string + moving-mass model, applies gravity on the
+    mass DOF, integrates with Newmark's method including the moving
+    contact spring as a rank-1 stiffness update at each step, and
+    records the string displacement at contact, the mass position, and
+    the contact force.
 
     Parameters
     ----------
@@ -98,10 +103,6 @@ def solve_moving_load(
         If zero, the load is placed at mid-span.
     t_max : float
         End time of the simulation.
-    omega_p : float, optional
-        Parametric excitation circular frequency (default 0).
-    force : float, optional
-        Moving point load magnitude [N] (default 1).
     dt_out : float or None, optional
         Output sampling interval. Defaults to ``dt``.
     show_progress : bool, optional
@@ -140,10 +141,19 @@ def solve_moving_load(
     )
     state = integrator.initial_state(model.n_dof)
 
+    g = 9.81  # gravitational acceleration [m/s^2]
+
+    # Constant external force: gravity on the moving-mass DOF.
+    external_force = np.zeros(model.n_dof)
+    external_force[model.mass_dof] = model.mass[model.mass_dof, model.mass_dof] * g
+
+
     t_all = np.arange(0.0, t_max + 0.5 * dt, dt)
     output_stride = max(1, int(round(dt_out / dt)))
     t_out: list[float] = []
     u_point: list[float] = []
+    z_mass: list[float] = []
+    contact_force: list[float] = []
 
     x_min = model.node_x.min()
     x_max = catenary_length
@@ -157,24 +167,34 @@ def solve_moving_load(
             load_x = 0.5 * catenary_length
 
         load_x = wrap_load_position(load_x, x_min, x_max)
-        shape = load_shape_vector(model.node_x, load_x, x_max, model.n_dof)
+        d = contact_direction(model.node_x, load_x, x_max, model.n_dof, model.mass_dof)
+
         state = integrator.step(
             state=state,
-            load_shape=shape,
-            force=force,
-            omega_p=omega_p,
-            time=time,
+            contact_direction=d,
+            contact_stiffness=model.contact_stiffness,
+            external_force=external_force,
             mass=model.mass,
             damping=model.damping,
         )
 
         if step_index % output_stride == 0:
+            # w_c(t) = N(t).T @ w  — the string DOF entries of d are N(t)
+            shape = d.copy()
+            shape[model.mass_dof] = 0.0
+            w_c = float(shape @ state.displacement)
+            z = float(state.displacement[model.mass_dof])
+
             t_out.append(time)
-            u_point.append(displacement_at_load(shape, state.displacement))
+            u_point.append(w_c)
+            z_mass.append(z)
+            contact_force.append(model.contact_stiffness * (z - w_c))
 
     return SolverOutput(
         t=np.asarray(t_out),
         t_all=t_all,
         u_point=np.asarray(u_point),
+        z_mass=np.asarray(z_mass),
+        contact_force=np.asarray(contact_force),
         model=model,
     )

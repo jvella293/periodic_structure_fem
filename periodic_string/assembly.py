@@ -28,6 +28,13 @@ class AssembledModel:
         Number of global degrees of freedom (``n_nodes``).
     mass : scipy.sparse.csr_matrix
         Global mass matrix.
+    n_string_dofs : int
+        Number of string transverse DOFs (``n_nodes``).
+    mass_dof : int
+        Global index of the moving-mass vertical DOF ``z(t)``.
+    contact_stiffness : float
+        Stiffness of the contact spring ``K`` between the moving mass
+        and the string.
     stiffness : scipy.sparse.csr_matrix
         Global stiffness matrix (static part — excludes the time-varying
         contact contribution).

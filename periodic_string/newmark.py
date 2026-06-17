@@ -28,11 +28,16 @@ class NewmarkState:
 
 @dataclass(frozen=True)
 class NewmarkIntegrator:
-    """Average-acceleration Newmark integrator for linear dynamics.
+    """Average-acceleration Newmark integrator for linear dynamics
+    with a time-varying rank-1 contact-stiffness contribution.
+
+    The static part of the effective stiffness ``K_static + a1 * C + a0 * M`` 
+    is assembled once and stored as a sparse matrix. 
+    At each step the contact contribution ``K * d(t) d(t).T`` 
+    is added and the resulting system is factorisedand solved.
 
     Uses ``beta = 0.25`` and ``gamma = 0.5`` (unconditionally stable
-    for linear systems). The effective stiffness matrix is factorized
-    once at construction.
+    for linear systems).
 
     Attributes
     ----------
@@ -44,10 +49,8 @@ class NewmarkIntegrator:
         Newmark gamma parameter.
     a0, a1, a2, a3, a4, a5 : float
         Newmark integration coefficients.
-    equivalent_stiffness : scipy.sparse.csc_matrix or None
-        Effective stiffness on free DOFs.
-    factorization : scipy.sparse.linalg.splu or None
-        LU factorization of ``equivalent_stiffness``.
+    static_equivalent_stiffness : scipy.sparse.csc_matrix or None
+        Static effective stiffness on free DOFs.
     free_dofs : numpy.ndarray or None
         Indices of unconstrained degrees of freedom.
     """
@@ -61,8 +64,7 @@ class NewmarkIntegrator:
     a3: float = 0.0
     a4: float = 0.0
     a5: float = 0.0
-    equivalent_stiffness: sparse.csc_matrix | None = None
-    factorization: splu | None = None
+    static_equivalent_stiffness: sparse.csc_matrix | None = None
     free_dofs: np.ndarray | None = None
 
     @classmethod
@@ -74,7 +76,11 @@ class NewmarkIntegrator:
         free_dofs: np.ndarray,
         dt: float,
     ) -> NewmarkIntegrator:
-        """Build an integrator with pre-factorized effective stiffness.
+        """Build an integrator and assemble the static effective stiffness.
+
+        The static effective stiffness ``K + a1 * C + a0 * M`` is stored
+        on free DOFs; the time-varying contact contribution is added
+        and factorised inside :meth:`step`.
 
         Parameters
         ----------
@@ -103,9 +109,8 @@ class NewmarkIntegrator:
         a4 = gamma / beta - 1.0
         a5 = dt * (gamma / (2.0 * beta) - 1.0)
 
-        equivalent = stiffness + a1 * damping + a0 * mass
-        equivalent_free = equivalent[free_dofs, :][:, free_dofs].tocsc()
-        factorization = splu(equivalent_free)
+        static_equivalent = stiffness + a1 * damping + a0 * mass
+        static_equivalent_free = static_equivalent[free_dofs, :][:, free_dofs].tocsr()
 
         return cls(
             dt=dt,
@@ -117,8 +122,7 @@ class NewmarkIntegrator:
             a3=a3,
             a4=a4,
             a5=a5,
-            equivalent_stiffness=equivalent_free,
-            factorization=factorization,
+            static_equivalent_stiffness=static_equivalent_free,
             free_dofs=free_dofs,
         )
 
@@ -144,31 +148,30 @@ class NewmarkIntegrator:
     def step(
         self,
         state: NewmarkState,
-        load_shape: np.ndarray,
-        force: float,
-        omega_p: float,
-        time: float,
+        contact_direction: np.ndarray,
+        contact_stiffness: float,
+        external_force: np.ndarray,
         mass: sparse.csr_matrix,
         damping: sparse.csr_matrix,
     ) -> NewmarkState:
         """Advance the state by one Newmark time step.
 
-        The external load is a point load of magnitude ``force``,
-        modulated by ``cos(omega_p * time)`` and distributed via
-        ``load_shape``.
+        The external load is a constant force vector ``external_force``
+        (e.g. gravity applied to the moving-mass DOF). The contact
+        coupling between the moving mass and the string at the current
+        load position is added as a rank-1 update
+        ``contact_stiffness * d d.T``, where ``d = contact_direction``.
 
         Parameters
         ----------
         state : NewmarkState
             State at the current time.
-        load_shape : numpy.ndarray
-            Shape vector for a unit vertical point load.
-        force : float
-            Point load magnitude [N].
-        omega_p : float
-            Parametric excitation circular frequency.
-        time : float
-            Current simulation time.
+        contact_direction : numpy.ndarray
+            Direction vector ``d(t) = [N(t); -1]`` of length ``n_dof``.
+        contact_stiffness : float
+            Contact spring stiffness ``K``.
+        external_force : numpy.ndarray
+            Constant nodal force vector (gravity on the mass DOF).
         mass : scipy.sparse.csr_matrix
             Global mass matrix.
         damping : scipy.sparse.csr_matrix
@@ -179,15 +182,25 @@ class NewmarkIntegrator:
         NewmarkState
             Updated displacement, velocity, and acceleration.
         """
-        load_term = -force * load_shape * np.cos(omega_p * time)
+        free = self.free_dofs
+        d = contact_direction
+        d_free = d[free]
+
+        # Rank-1 contact stiffness update on free DOFs.
+        # Built as a sparse outer product to keep matrix arithmetic sparse.
+        d_sp = sparse.csr_matrix(d_free.reshape(-1, 1))
+        contact_block = contact_stiffness * (d_sp @ d_sp.T)
+        equivalent_free = (self.static_equivalent_stiffness + contact_block).tocsc()
+        factorization = splu(equivalent_free)
+
         rhs = (
-            load_term
-            + mass @ (self.a0 * state.displacement + self.a2 * state.velocity + self.a3 * state.acceleration)
+            external_force
+            + mass    @ (self.a0 * state.displacement + self.a2 * state.velocity + self.a3 * state.acceleration)
             + damping @ (self.a1 * state.displacement + self.a4 * state.velocity + self.a5 * state.acceleration)
         )
 
         displacement = np.zeros_like(state.displacement)
-        displacement[self.free_dofs] = self.factorization.solve(rhs[self.free_dofs])
+        displacement[free] = factorization.solve(rhs[free])
 
         velocity = self.a1 * (displacement - state.displacement) - self.a4 * state.velocity - self.a5 * state.acceleration
         acceleration = self.a0 * (displacement - state.displacement) - self.a2 * state.velocity - self.a3 * state.acceleration

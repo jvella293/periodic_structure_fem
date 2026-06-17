@@ -1,4 +1,5 @@
-"""Periodic taut string with moving load.
+"""Periodic taut string with moving oscillator coupled to 
+the string by a contact spring.
 
 This package assembles a periodic string on elastic supports and
 integrates its response to a moving harmonic point load using
