@@ -9,9 +9,10 @@ import numpy as np
 from periodic_string.assembly import mesh_parameters
 from periodic_string.solver import solve_moving_load
 
+
 # --- time integration ---
-dt = 1.0e-4
-V = 150.0
+dt = 0.5e-4 
+V = 66.60277429177017
 
 # --- string ---
 tension = 2.0e4
@@ -19,12 +20,12 @@ damp_string = 0.0 # no string damping in the PDE
 m = 1.1 # mass per unit length of the string [kg/m] (CHECK! kg or kg/m)
 
 # --- contact oscillator ---
-M_mass = 50.0          # mass [kg], placeholder pantograph value
+M_mass = 110          # mass [kg],
 K_contact = 1.0e8     # contact spring stiffness [N/m]
 
 # --- periodic section ---
 spacing = 10.0
-n_cells = 50
+n_cells = 275 # increase to reduce wake re-encounter artifacts or reduce t_max to avoid them (try to make them equal to SAFE HORIZON)
 element_length_requested = 0.05
 
 # --- vertical supports at periodic positions ---
@@ -37,7 +38,7 @@ element_length, n_elements_per_cell, n_nodes, catenary_length = mesh_parameters(
     spacing, element_length_requested, n_cells
 )
 #t_max = 0.7 * n_cells * spacing / V
-t_max = 10.0 
+t_max = 8 
 
 def main() -> None:
     """Run the default moving-load simulation and plot displacement."""
@@ -48,6 +49,50 @@ def main() -> None:
         f"{n_elements_per_cell} elements/cell, "
         f"{n_nodes} nodes"
     )
+
+    # --- physics-derived diagnostics ---
+    c = np.sqrt(tension / m)                      # string wave speed [m/s]
+    mach = V / c                                  # sub/super-critical ratio
+    omega_c = np.sqrt(K_contact / M_mass)         # contact mode [rad/s]
+    f_c = omega_c / (2 * np.pi)                   # contact mode [Hz]
+    T_c = 1.0 / f_c                               # contact period [s]
+    f_pass = V / spacing                          # support-passing frequency [Hz]
+
+    # --- numerical-resolution diagnostics ---
+    points_per_contact_period = T_c / dt
+    load_advance_per_step = V * dt
+    elements_per_step = load_advance_per_step / element_length
+
+    # --- wake re-encounter horizon (periodic domain) ---
+    wake_safety_factor = 0.8   # use at most 80% of the wake horizon
+    t_wake = catenary_length / (c + V)
+    t_wake_safe = wake_safety_factor * t_wake
+    loops_in_run = V * t_max / catenary_length
+
+
+    print("\n--- Physics ---")
+    print(f"  Wave speed c                  = {c:.2f} m/s")
+    print(f"  Mach V/c                      = {mach:.3f}  ({'sub-critical' if mach < 1 else 'super-critical'})")
+    print(f"  Contact mode                  = {f_c:.1f} Hz  (period {T_c*1e3:.2f} ms)")
+    print(f"  Support-passing frequency     = {f_pass:.2f} Hz")
+
+    print("\n--- Numerical resolution ---")
+    print(f"  Points per contact period     = {points_per_contact_period:.1f}  (want >= 20)")
+    print(f"  Load advance per step         = {load_advance_per_step*1e3:.3f} mm")
+    print(f"  Elements per step             = {elements_per_step:.3f}  (want < 1)")
+
+    print("\n--- Wake horizon ---")
+    print(f"  Wake re-encounter at t        = {t_wake:.2f} s")
+    print(f"  Safe horizon ({wake_safety_factor:.0%} margin)        = {t_wake_safe:.2f} s")
+    print(f"  Requested t_max               = {t_max:.2f} s")
+    print(f"  Load loops around domain      = {loops_in_run:.1f}")
+    if t_max > t_wake_safe:
+        print(f"  WARNING: t_max exceeds the {wake_safety_factor:.0%}-safe horizon by "
+              f"{t_max - t_wake_safe:.2f} s.")
+        print(f"  Either reduce t_max to <= {t_wake_safe:.2f} s, or")
+        print(f"  extend domain to >= {(c + V) * t_max / wake_safety_factor:.0f} m "
+              f"(n_cells >= {int(np.ceil((c + V) * t_max / (wake_safety_factor * spacing)))}).")
+        print()
 
     output = solve_moving_load(
         tension=tension,

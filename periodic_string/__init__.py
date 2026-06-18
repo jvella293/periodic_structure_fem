@@ -2,7 +2,7 @@
 the string by a contact spring.
 
 This package assembles a periodic string on elastic supports and
-integrates its response to a moving harmonic point load using
+integrates its response to a moving oscillator using
 Newmark time integration.
 """
 

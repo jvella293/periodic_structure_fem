@@ -105,8 +105,11 @@ class NewmarkIntegrator:
         NewmarkIntegrator
             Configured integrator ready for time stepping.
         """
-        beta = 0.25
-        gamma = 0.5
+        gamma = 0.55
+        beta = 0.25 * (gamma + 0.5) ** 2
+        
+    #    beta = 0.25
+    #    gamma = 0.5
         a0 = 1.0 / (beta * dt * dt)
         a1 = gamma / (beta * dt)
         a2 = 1.0 / (beta * dt)
@@ -115,7 +118,7 @@ class NewmarkIntegrator:
         a5 = dt * (gamma / (2.0 * beta) - 1.0)
 
         static_equivalent = stiffness + a1 * damping + a0 * mass
-        static_equivalent_free = static_equivalent[free_dofs, :][:, free_dofs].tocsr()
+        static_equivalent_free = static_equivalent[free_dofs, :][:, free_dofs].tocsc()
         static_factorization = splu(static_equivalent_free)
 
         return cls(

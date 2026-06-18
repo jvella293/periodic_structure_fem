@@ -8,7 +8,7 @@ from scipy import sparse
 from scipy.sparse.linalg import splu
 
 from periodic_string.assembly import AssembledModel, assemble_model
-from periodic_string.moving_load import displacement_at_load, load_shape_vector, wrap_load_position, contact_direction
+from periodic_string.moving_load import wrap_load_position, contact_direction
 from periodic_string.newmark import NewmarkIntegrator, NewmarkState
 
 
@@ -259,19 +259,12 @@ def solve_moving_load(
     load_x_init = wrap_load_position(load_x_init, x_min, x_max)
     state = _static_initial_state(model, external_force, load_x_init)
 
-    # Constant external force: gravity on the moving-mass DOF.
-    external_force = np.zeros(model.n_dof)
-    external_force[model.mass_dof] = model.mass[model.mass_dof, model.mass_dof] * g
-
     t_all = np.arange(0.0, t_max + 0.5 * dt, dt)
     output_stride = max(1, int(round(dt_out / dt)))
     t_out: list[float] = []
     u_point: list[float] = []
     z_mass: list[float] = []
     contact_force: list[float] = []
-
-    x_min = model.node_x.min()
-    x_max = catenary_length
 
     for step_index, time in enumerate(
         tqdm(t_all, desc="Newmark time integration", disable=not show_progress)
@@ -292,6 +285,10 @@ def solve_moving_load(
             mass=model.mass,
             damping=model.damping,
         )
+
+        if not np.isfinite(state.displacement).all():
+            print(f"Non-finite state at t = {time:.4f} s — stopping early.")
+            break
 
         if step_index % output_stride == 0:
             # w_c(t) = N(t).T @ w  — the string DOF entries of d are N(t)

@@ -25,7 +25,7 @@ class AssembledModel:
     catenary_length : float
         Total length of one periodic catenary span.
     n_dof : int
-        Number of global degrees of freedom (``n_nodes``).
+        Number of global degrees of freedom (``n_nodes + 1``).
     mass : scipy.sparse.csr_matrix
         Global mass matrix.
     n_string_dofs : int
