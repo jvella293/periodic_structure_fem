@@ -43,6 +43,15 @@ class NewmarkIntegrator:
     introduces a small parametric perturbation but is benign in
     practice for slowly-moving contact points).
 
+
+    Uses ``gamma = 0.55`` with ``beta = 0.25 * (gamma + 0.5)**2`` to add
+    a small amount of algorithmic (numerical) damping. This suppresses
+    the spurious high-frequency mesh mode that the time-varying rank-1
+    contact update would otherwise pump in the (near-undamped) system.
+    Note this makes the scheme non-energy-conserving by design.
+
+    UPDATE BUT CHECK ON THE ABOVE^^^^^
+
     Attributes
     ----------
     dt : float
@@ -105,6 +114,10 @@ class NewmarkIntegrator:
         NewmarkIntegrator
             Configured integrator ready for time stepping.
         """
+        # gamma > 0.5 adds algorithmic damping to suppress the spurious
+        # high-frequency mesh mode (see thesis §X). Keeps 2nd-order accuracy.
+        gamma = 0.55
+        beta = 0.25 * (gamma + 0.5) ** 2
         gamma = 0.55
         beta = 0.25 * (gamma + 0.5) ** 2
         

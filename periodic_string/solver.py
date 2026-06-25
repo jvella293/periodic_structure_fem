@@ -91,58 +91,6 @@ def _static_initial_state(
     )
 
 
-def _static_initial_state(
-    model: AssembledModel,
-    external_force: np.ndarray,
-    load_x_init: float,
-) -> NewmarkState:
-    """Compute the static-equilibrium initial state at the initial load position.
-
-    Solves ``(K_static + K * d_init d_init.T) u_0 = f`` with gravity on the
-    moving-mass DOF and the contact spring placed at ``load_x_init``. Returns
-    a state with ``u_0`` as the displacement and zero velocity/acceleration.
-
-    This removes the gravity-switch-on transient that would otherwise excite
-    the high-frequency contact mode at ``sqrt(K / M)``.
-
-    Parameters
-    ----------
-    model : AssembledModel
-        Assembled finite-element model.
-    external_force : numpy.ndarray
-        Constant nodal force vector (gravity on the mass DOF).
-    load_x_init : float
-        Load position at ``t = 0``.
-
-    Returns
-    -------
-    NewmarkState
-        Initial state at static equilibrium with zero velocity and
-        acceleration.
-    """
-    free = model.free_dofs
-    d_init = contact_direction(
-        model.node_x,
-        load_x_init,
-        model.catenary_length,
-        model.n_dof,
-        model.mass_dof,
-    )
-    d_init_free = d_init[free]
-    d_init_sp = sparse.csr_matrix(d_init_free.reshape(-1, 1))
-    contact_block = model.contact_stiffness * (d_init_sp @ d_init_sp.T)
-    k_total_free = (model.stiffness[free, :][:, free] + contact_block).tocsc()
-
-    u_0 = np.zeros(model.n_dof)
-    u_0[free] = splu(k_total_free).solve(external_force[free])
-
-    return NewmarkState(
-        displacement=u_0,
-        velocity=np.zeros(model.n_dof),
-        acceleration=np.zeros(model.n_dof),
-    )
-
-
 def solve_moving_load(
     *,
     tension: float,
@@ -249,7 +197,6 @@ def solve_moving_load(
 
     # Constant external force: gravity on the moving-mass DOF.
     external_force = np.zeros(model.n_dof)
-    external_force[model.mass_dof] = model.mass[model.mass_dof, model.mass_dof] * g
 
     x_min = model.node_x.min()
     x_max = catenary_length
@@ -257,7 +204,8 @@ def solve_moving_load(
     # Static initial condition at t = 0: avoids the gravity-switch-on transient.
     load_x_init = 0.0 if velocity != 0.0 else 0.5 * catenary_length
     load_x_init = wrap_load_position(load_x_init, x_min, x_max)
-    state = _static_initial_state(model, external_force, load_x_init)
+    state = integrator.initial_state(model.n_dof)
+    state.velocity[model.mass_dof] = 1.0e-6   # small perturbation seed
 
     t_all = np.arange(0.0, t_max + 0.5 * dt, dt)
     output_stride = max(1, int(round(dt_out / dt)))
