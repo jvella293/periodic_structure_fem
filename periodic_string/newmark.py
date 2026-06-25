@@ -116,13 +116,11 @@ class NewmarkIntegrator:
         """
         # gamma > 0.5 adds algorithmic damping to suppress the spurious
         # high-frequency mesh mode (see thesis §X). Keeps 2nd-order accuracy.
-        gamma = 0.55
-        beta = 0.25 * (gamma + 0.5) ** 2
-        gamma = 0.55
-        beta = 0.25 * (gamma + 0.5) ** 2
+    #    gamma = 0.55
+    #    beta = 0.25 * (gamma + 0.5) ** 2
         
-    #    beta = 0.25
-    #    gamma = 0.5
+        beta = 0.25
+        gamma = 0.5
         a0 = 1.0 / (beta * dt * dt)
         a1 = gamma / (beta * dt)
         a2 = 1.0 / (beta * dt)

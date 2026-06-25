@@ -12,7 +12,7 @@ from periodic_string.solver import solve_moving_load
 
 # --- time integration ---
 dt = 1e-4 
-V = 50
+V = 33.41686274817808
 
 # --- string ---
 tension = 2.0e4
@@ -20,8 +20,8 @@ damp_string = 0.0 # no string damping in the PDE
 m = 1.1 # mass per unit length of the string [kg/m] (CHECK! kg or kg/m)
 
 # --- contact oscillator ---
-M_mass = 2.5          # mass [kg],
-K_contact = 1.0e4     # contact spring stiffness [N/m]
+M_mass = 33.52827988687671        # mass [kg],
+K_contact = 1.0e8     # contact spring stiffness [N/m]
 
 # --- periodic section ---
 spacing = 10.0
@@ -30,7 +30,7 @@ element_length_requested = 0.05
 
 # --- vertical supports at periodic positions ---
 Kv =  4.0e3                                   # discrete support stiffness [N/m], = ek
-phi = 1.0e-4                                  # support loss factor
+phi = 0                                  # support loss factor
 omega_ref = 2.0 * np.pi * V / spacing         # support-passing frequency [rad/s]
 
 # --- derived mesh ---
@@ -38,7 +38,7 @@ element_length, n_elements_per_cell, n_nodes, catenary_length = mesh_parameters(
     spacing, element_length_requested, n_cells
 )
 #t_max = 0.7 * n_cells * spacing / V
-t_max = 6 
+t_max = 10 
 
 def main() -> None:
     """Run the default moving-load simulation and plot displacement."""
@@ -113,16 +113,29 @@ def main() -> None:
     )
     print(f"Springs: {output.model.spring_nodes.size}")
 
+    # --- structural sanity (still valid) ---
     print(f"n_dof = {output.model.n_dof}, expected {n_nodes + 1}")
     print(f"mass_dof = {output.model.mass_dof}, expected {n_nodes}")
-    print(f"M on mass DOF: {output.model.mass[output.model.mass_dof, output.model.mass_dof]}")
+    print(f"M on mass DOF: {output.model.mass[output.model.mass_dof, output.model.mass_dof]:.4g}")
 
-    print(f"Mean gap (z - w_c): {np.mean(output.z_mass - output.u_point):.3e} m")
-    print(f"Expected: {M_mass * 9.81 / K_contact:.3e} m")
+    # --- perturbation growth/decay (gravity off, seeded perturbation) ---
+    F = output.contact_force
+    env = np.abs(F)
 
-    mask = output.t > 1.0   # skip the first 1 s of transient
-    print(f"Mean contact force: {np.mean(output.contact_force[mask]):.2f} N")
-    print(f"Expected (Mg): {M_mass * 9.81:.2f} N")
+    print("\n--- Perturbation response ---")
+    print(f"  Initial |F_tr|                = {env[0]:.3e} N")
+    print(f"  Final   |F_tr|                = {env[-1]:.3e} N")
+    print(f"  Envelope ratio (final/init)   = {env[-1] / max(env[0], 1e-300):.3e}")
+
+    # Growth rate from log-envelope slope, fitted after initial transients.
+    T_period = spacing / V                 # support-passing period L/V
+    fit_mask = (output.t > 3.0 * T_period) & (env > 0.0)
+    if fit_mask.sum() > 2:
+        slope, _ = np.polyfit(output.t[fit_mask], np.log(env[fit_mask]), 1)
+        verdict = "UNSTABLE" if slope > 0 else "stable"
+        print(f"  Growth rate Re(lambda)        = {slope:+.4f} 1/s  ({verdict})")
+    else:
+        print("  Growth rate: not enough nonzero samples to fit.")
 
 
     fig, axes = plt.subplots(2, 1, sharex=True)
