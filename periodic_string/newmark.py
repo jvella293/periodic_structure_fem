@@ -7,6 +7,13 @@ from scipy import sparse
 from scipy.sparse.linalg import splu
 
 
+# Single source of truth for the Newmark scheme parameters.
+# gamma = 0.5 is the non-dissipative average-acceleration scheme.
+# Set gamma > 0.5 (with beta = 0.25*(gamma+0.5)**2) to add algorithmic
+# damping that suppresses the spurious high-frequency mesh mode.
+NEWMARK_GAMMA = 0.5
+NEWMARK_BETA = 0.25 * (NEWMARK_GAMMA + 0.5) ** 2
+
 @dataclass
 class NewmarkState:
     """State vector at one time step of Newmark integration.
@@ -28,29 +35,21 @@ class NewmarkState:
 
 @dataclass(frozen=True)
 class NewmarkIntegrator:
-    """Average-acceleration Newmark integrator for linear dynamics
-    with a time-varying rank-1 contact-stiffness contribution, solve
-    via Sherman-Morrison
+    """Average-acceleration Newmark integrator with a time-varying rank-1
+    contact-stiffness contribution, solved via Sherman-Morrison.
 
-    The static effective stiffness ``A = K_static + a1 * C + a0 * M``
-    is assembled and LU-factorised once at construction. Each step
-    folds in the time-varying contact contribution ``K * d(t) d(t).T``
-    using the Sherman-Morrison identity, costing only two
-    back-substitutions per step rather than a full re-factorisation.
+    The static effective stiffness A = K_static + a1*C + a0*M is assembled
+    and LU-factorised once at construction. Each step folds in the
+    time-varying contact contribution K*d(t)d(t).T using the
+    Sherman-Morrison identity, costing two back-substitutions per step.
 
-    Uses ``beta = 0.25`` and ``gamma = 0.5`` (unconditionally stable
-    for linear systems); the time-varying rank-1 update
-    introduces a small parametric perturbation but is benign in
-    practice for slowly-moving contact points).
-
-
-    Uses ``gamma = 0.55`` with ``beta = 0.25 * (gamma + 0.5)**2`` to add
-    a small amount of algorithmic (numerical) damping. This suppresses
-    the spurious high-frequency mesh mode that the time-varying rank-1
-    contact update would otherwise pump in the (near-undamped) system.
-    Note this makes the scheme non-energy-conserving by design.
-
-    UPDATE BUT CHECK ON THE ABOVE^^^^^
+    The scheme parameters are the module constants NEWMARK_GAMMA and
+    NEWMARK_BETA. gamma = 0.5 (beta = 0.25) is the non-dissipative
+    average-acceleration scheme. Setting gamma > 0.5 adds algorithmic
+    damping to suppress the spurious high-frequency mesh mode that the
+    moving rank-1 update would otherwise pump in the near-undamped system;
+    this makes the scheme non-energy-conserving by design.
+    ...
 
     Attributes
     ----------
@@ -114,13 +113,8 @@ class NewmarkIntegrator:
         NewmarkIntegrator
             Configured integrator ready for time stepping.
         """
-        # gamma > 0.5 adds algorithmic damping to suppress the spurious
-        # high-frequency mesh mode (see thesis §X). Keeps 2nd-order accuracy.
-    #    gamma = 0.55
-    #    beta = 0.25 * (gamma + 0.5) ** 2
-        
-        beta = 0.25
-        gamma = 0.5
+        beta = NEWMARK_BETA
+        gamma = NEWMARK_GAMMA
         a0 = 1.0 / (beta * dt * dt)
         a1 = gamma / (beta * dt)
         a2 = 1.0 / (beta * dt)

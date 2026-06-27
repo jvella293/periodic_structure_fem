@@ -1,99 +1,144 @@
 # Created by RvL
-"""Moving load on a periodic taut string."""
+"""Moving load on a periodic taut string.
+
+Perturbation-stability run: gravity off, small seeded perturbation, the
+growth/decay rate Re(lambda) of the contact-force envelope is the validation
+quantity (compare against the Hill/Floquet dominant exponent at phi = 0).
+
+Input convention
+----------------
+The non-dimensional speed ``Vc = V / c`` is the control parameter; the
+dimensional speed ``V`` is derived from the string wave speed
+``c = sqrt(H / rhoA)``. Figure names and titles use V/c.
+
+Features
+--------
+  * Parameter-hash caching: identical parameters are NOT re-simulated; the
+    cached result is loaded and re-plotted instead. Set FORCE_RERUN = True
+    after changing solver/newmark CODE (the hash tracks parameters only,
+    not source code).
+  * Figures saved as PNG (quick view, 300 dpi) and PDF (vector, for the
+    thesis), with all parameters printed across the top and encoded in the
+    filename. The dense |F_tr| trace is rasterised inside the PDF to keep it
+    small while axes/text/peaks stay vector.
+  * Newmark gamma/beta are imported from newmark.py so the filename always
+    reflects what actually ran.
+"""
 
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import datetime
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.signal import find_peaks
 
 from periodic_string.assembly import mesh_parameters
 from periodic_string.solver import solve_moving_load
 
+# Surface the Newmark coefficients so the filename reflects what actually ran.
+# newmark.py should expose these as module constants; the fallback is only a
+# safety net (and would be wrong if newmark.py uses different values).
+try:
+    from periodic_string.newmark import NEWMARK_GAMMA, NEWMARK_BETA
+except ImportError:
+    NEWMARK_GAMMA = 0.5
+    NEWMARK_BETA = 0.25 * (NEWMARK_GAMMA + 0.5) ** 2
+
+
+# ======================================================================
+# Parameters
+# ======================================================================
 
 # --- time integration ---
-dt = 1e-4 
-V = 33.41686274817808
+dt = 1e-4
+Vc = 0.6            # V/c, non-dimensional speed (control parameter)
 
 # --- string ---
 tension = 2.0e4
-damp_string = 0.0 # no string damping in the PDE
-m = 1.1 # mass per unit length of the string [kg/m] (CHECK! kg or kg/m)
+damp_string = 0.0   # no string damping in the PDE
+m = 1.1             # mass per unit length of the string [kg/m]
+
+# --- derived wave speed and dimensional velocity ---
+c = np.sqrt(tension / m)     # string wave speed [m/s]
+V = Vc * c                   # dimensional load speed [m/s]
 
 # --- contact oscillator ---
-M_mass = 33.52827988687671        # mass [kg],
-K_contact = 1.0e8     # contact spring stiffness [N/m]
+M_mass = 100        # mass [kg]
+K_contact = 1.0e5   # contact spring stiffness [N/m]
 
 # --- periodic section ---
 spacing = 10.0
-n_cells = 275 # increase to reduce wake re-encounter artifacts or reduce t_max to avoid them (try to make them equal to SAFE HORIZON)
+n_cells = 325
 element_length_requested = 0.05
 
 # --- vertical supports at periodic positions ---
-Kv =  4.0e3                                   # discrete support stiffness [N/m], = ek
-phi = 0                                  # support loss factor
-omega_ref = 2.0 * np.pi * V / spacing         # support-passing frequency [rad/s]
+Kv = 4.0e3                                    # discrete support stiffness [N/m], = ek
+phi = 0                                        # support loss factor (0 = undamped validation)
+omega_ref = 2.0 * np.pi * V / spacing          # support-passing frequency [rad/s]
+
+# --- run length ---
+t_max = 12
+
+# --- cache / output control ---
+FORCE_RERUN = False                 # True => recompute even if a cache hit exists
+CACHE_DIR = Path("cache")
+FIG_DIR = Path("figures")
 
 # --- derived mesh ---
 element_length, n_elements_per_cell, n_nodes, catenary_length = mesh_parameters(
     spacing, element_length_requested, n_cells
 )
-#t_max = 0.7 * n_cells * spacing / V
-t_max = 10 
 
-def main() -> None:
-    """Run the default moving-load simulation and plot displacement."""
-    print(
-        "Mesh: "
-        f"requested element length={element_length_requested:.6g} m, "
-        f"effective={element_length:.6g} m, "
-        f"{n_elements_per_cell} elements/cell, "
-        f"{n_nodes} nodes"
+
+# ======================================================================
+# Helpers
+# ======================================================================
+
+def collect_params() -> dict:
+    """Everything that affects the result. Any change => new hash => rerun.
+
+    Both Vc and V are stored: Vc is the control parameter, V is what the
+    solver consumes. The hash is deterministic either way.
+    """
+    return {
+        "Vc": Vc, "V": V, "tension": tension, "damp_string": damp_string, "m": m,
+        "M_mass": M_mass, "K_contact": K_contact, "spacing": spacing,
+        "n_cells": n_cells, "element_length_requested": element_length_requested,
+        "Kv": Kv, "phi": phi, "dt": dt, "t_max": t_max,
+        "gamma": NEWMARK_GAMMA, "beta": NEWMARK_BETA,
+    }
+
+
+def param_hash(params: dict) -> str:
+    """Stable 12-char hash of the run parameters."""
+    return hashlib.md5(json.dumps(params, sort_keys=True).encode()).hexdigest()[:12]
+
+
+def readable_tag() -> str:
+    """Human-browsable filename stem encoding the key physics/numerics."""
+    return (
+        f"Vc{Vc:.3f}_M{M_mass:g}_K{K_contact:.0e}_phi{phi:g}"
+        f"_g{NEWMARK_GAMMA:g}_b{NEWMARK_BETA:.4f}_dt{dt:g}_nc{n_cells}"
     )
 
-    # --- physics-derived diagnostics ---
-    c = np.sqrt(tension / m)                      # string wave speed [m/s]
-    mach = V / c                                  # sub/super-critical ratio
-    omega_c = np.sqrt(K_contact / M_mass)         # contact mode [rad/s]
-    f_c = omega_c / (2 * np.pi)                   # contact mode [Hz]
-    T_c = 1.0 / f_c                               # contact period [s]
-    f_pass = V / spacing                          # support-passing frequency [Hz]
 
-    # --- numerical-resolution diagnostics ---
-    points_per_contact_period = T_c / dt
-    load_advance_per_step = V * dt
-    elements_per_step = load_advance_per_step / element_length
+def run_or_load(params: dict):
+    """Return (t, u_point, z_mass, contact_force), from cache if available."""
+    CACHE_DIR.mkdir(exist_ok=True)
+    h = param_hash(params)
+    cache_file = CACHE_DIR / f"run_{h}.npz"
 
-    # --- wake re-encounter horizon (periodic domain) ---
-    wake_safety_factor = 0.8   # use at most 80% of the wake horizon
-    t_wake = catenary_length / (c + V)
-    t_wake_safe = wake_safety_factor * t_wake
-    loops_in_run = V * t_max / catenary_length
+    if cache_file.exists() and not FORCE_RERUN:
+        print(f"Cache HIT ({h}) -> loading (set FORCE_RERUN=True to recompute).")
+        d = np.load(cache_file)
+        return d["t"], d["u_point"], d["z_mass"], d["contact_force"]
 
-
-    print("\n--- Physics ---")
-    print(f"  Wave speed c                  = {c:.2f} m/s")
-    print(f"  Mach V/c                      = {mach:.3f}  ({'sub-critical' if mach < 1 else 'super-critical'})")
-    print(f"  Contact mode                  = {f_c:.1f} Hz  (period {T_c*1e3:.2f} ms)")
-    print(f"  Support-passing frequency     = {f_pass:.2f} Hz")
-
-    print("\n--- Numerical resolution ---")
-    print(f"  Points per contact period     = {points_per_contact_period:.1f}  (want >= 20)")
-    print(f"  Load advance per step         = {load_advance_per_step*1e3:.3f} mm")
-    print(f"  Elements per step             = {elements_per_step:.3f}  (want < 1)")
-
-    print("\n--- Wake horizon ---")
-    print(f"  Wake re-encounter at t        = {t_wake:.2f} s")
-    print(f"  Safe horizon ({wake_safety_factor:.0%} margin)        = {t_wake_safe:.2f} s")
-    print(f"  Requested t_max               = {t_max:.2f} s")
-    print(f"  Load loops around domain      = {loops_in_run:.1f}")
-    if t_max > t_wake_safe:
-        print(f"  WARNING: t_max exceeds the {wake_safety_factor:.0%}-safe horizon by "
-              f"{t_max - t_wake_safe:.2f} s.")
-        print(f"  Either reduce t_max to <= {t_wake_safe:.2f} s, or")
-        print(f"  extend domain to >= {(c + V) * t_max / wake_safety_factor:.0f} m "
-              f"(n_cells >= {int(np.ceil((c + V) * t_max / (wake_safety_factor * spacing)))}).")
-        print()
-
+    reason = "FORCE_RERUN" if cache_file.exists() else "no cache"
+    print(f"Cache MISS ({h}, {reason}) -> running simulation.")
     output = solve_moving_load(
         tension=tension,
         damp_string=damp_string,
@@ -111,44 +156,189 @@ def main() -> None:
         velocity=V,
         t_max=t_max,
     )
-    print(f"Springs: {output.model.spring_nodes.size}")
+    np.savez(
+        cache_file,
+        t=output.t, u_point=output.u_point,
+        z_mass=output.z_mass, contact_force=output.contact_force,
+        **params,
+    )
+    print(f"  cached -> {cache_file}")
+    # keep the model handy for the structural sanity prints this one time
+    run_or_load._last_model = output.model
+    return output.t, output.u_point, output.z_mass, output.contact_force
 
-    # --- structural sanity (still valid) ---
-    print(f"n_dof = {output.model.n_dof}, expected {n_nodes + 1}")
-    print(f"mass_dof = {output.model.mass_dof}, expected {n_nodes}")
-    print(f"M on mass DOF: {output.model.mass[output.model.mass_dof, output.model.mass_dof]:.4g}")
 
-    # --- perturbation growth/decay (gravity off, seeded perturbation) ---
-    F = output.contact_force
-    env = np.abs(F)
+def growth_rate(t, contact_force, settle_periods=3.0):
+    """Robust Re(lambda) from the UPPER envelope (local maxima).
 
-    print("\n--- Perturbation response ---")
-    print(f"  Initial |F_tr|                = {env[0]:.3e} N")
-    print(f"  Final   |F_tr|                = {env[-1]:.3e} N")
-    print(f"  Envelope ratio (final/init)   = {env[-1] / max(env[0], 1e-300):.3e}")
+    Fitting the peaks (not the raw |F|) ignores beat dips that would corrupt a
+    single-line slope. Returns a dict including the uncertainty and a
+    noise-gated verdict so a near-neutral point is not falsely signed.
+    """
+    env = np.abs(contact_force)
+    T_period = spacing / V
+    settle = t > settle_periods * T_period
+    t_fit, env_fit = t[settle], env[settle]
 
-    # Growth rate from log-envelope slope, fitted after initial transients.
-    T_period = spacing / V                 # support-passing period L/V
-    fit_mask = (output.t > 3.0 * T_period) & (env > 0.0)
-    if fit_mask.sum() > 2:
-        slope, _ = np.polyfit(output.t[fit_mask], np.log(env[fit_mask]), 1)
-        verdict = "UNSTABLE" if slope > 0 else "stable"
-        print(f"  Growth rate Re(lambda)        = {slope:+.4f} 1/s  ({verdict})")
+    peak_idx, _ = find_peaks(env_fit)
+    out = {
+        "env": env, "init": env[0], "final": env[-1],
+        "ratio_endpoints": env[-1] / max(env[0], 1e-300),
+        "slope": None,
+    }
+    # beat-robust ratio: mean of last 10% vs first 10% (averages over beats)
+    n10 = max(1, len(env) // 10)
+    out["ratio_robust"] = env[-n10:].mean() / max(env[:n10].mean(), 1e-300)
+
+    if peak_idx.size >= 3:
+        t_pk = t_fit[peak_idx]
+        env_pk = env_fit[peak_idx]
+        good = env_pk > 0.0
+        (slope, intercept), cov = np.polyfit(
+            t_pk[good], np.log(env_pk[good]), 1, cov=True
+        )
+        slope_err = float(np.sqrt(cov[0, 0]))
+        if abs(slope) < 2.0 * slope_err:
+            verdict = "NEUTRAL (rate within noise)"
+        elif slope > 0:
+            verdict = "UNSTABLE"
+        else:
+            verdict = "stable"
+        out.update(slope=float(slope), intercept=float(intercept),
+                   slope_err=slope_err, verdict=verdict,
+                   t_pk=t_pk, env_pk=env_pk, n_peaks=int(t_pk.size))
     else:
-        print("  Growth rate: not enough nonzero samples to fit.")
+        out["verdict"] = f"too few peaks ({peak_idx.size}) - run longer"
+    return out
 
 
-    fig, axes = plt.subplots(2, 1, sharex=True)
-    axes[0].plot(output.t, output.u_point, label="w_c(t) string at contact")
-    axes[0].plot(output.t, output.z_mass, label="z(t) mass")
+# ======================================================================
+# Main
+# ======================================================================
+
+def main() -> None:
+    params = collect_params()
+
+    print(
+        "Mesh: "
+        f"requested element length={element_length_requested:.6g} m, "
+        f"effective={element_length:.6g} m, "
+        f"{n_elements_per_cell} elements/cell, {n_nodes} nodes"
+    )
+
+    # --- physics-derived diagnostics (c, V already defined at module level) ---
+    omega_c = np.sqrt(K_contact / M_mass)
+    f_c = omega_c / (2 * np.pi)
+    T_c = 1.0 / f_c
+    f_pass = V / spacing
+
+    # --- numerical-resolution diagnostics ---
+    points_per_contact_period = T_c / dt
+    load_advance_per_step = V * dt
+    elements_per_step = load_advance_per_step / element_length
+
+    # --- wake re-encounter horizon ---
+    wake_safety_factor = 0.8
+    t_wake = catenary_length / (c + V)
+    t_wake_safe = wake_safety_factor * t_wake
+    loops_in_run = V * t_max / catenary_length
+
+    print("\n--- Physics ---")
+    print(f"  Wave speed c                  = {c:.2f} m/s")
+    print(f"  V/c                           = {Vc:.3f}  (V = {V:.2f} m/s, "
+          f"{'sub-critical' if Vc < 1 else 'super-critical'})")
+    print(f"  Contact mode                  = {f_c:.1f} Hz  (period {T_c*1e3:.2f} ms)")
+    print(f"  Support-passing frequency     = {f_pass:.2f} Hz")
+    print(f"  f_c / f_pass                  = {f_c / f_pass:.3f}  (=2 => principal parametric)")
+
+    print("\n--- Numerical resolution ---")
+    print(f"  Points per contact period     = {points_per_contact_period:.1f}  (want >= 20)")
+    print(f"  Load advance per step         = {load_advance_per_step*1e3:.3f} mm")
+    print(f"  Elements per step             = {elements_per_step:.3f}  (want < 1)")
+    print(f"  Newmark gamma / beta          = {NEWMARK_GAMMA:g} / {NEWMARK_BETA:.4f}")
+
+    print("\n--- Wake horizon ---")
+    print(f"  Wake re-encounter at t        = {t_wake:.2f} s")
+    print(f"  Safe horizon ({wake_safety_factor:.0%} margin)        = {t_wake_safe:.2f} s")
+    print(f"  Requested t_max               = {t_max:.2f} s")
+    print(f"  Load loops around domain      = {loops_in_run:.1f}")
+    if t_max > t_wake_safe:
+        print(f"  WARNING: t_max exceeds the {wake_safety_factor:.0%}-safe horizon by "
+              f"{t_max - t_wake_safe:.2f} s.")
+        print(f"  Reduce t_max to <= {t_wake_safe:.2f} s, or extend domain to "
+              f">= {(c + V) * t_max / wake_safety_factor:.0f} m "
+              f"(n_cells >= {int(np.ceil((c + V) * t_max / (wake_safety_factor * spacing)))}).")
+
+    # --- run (or load from cache) ---
+    t, u_point, z_mass, contact_force = run_or_load(params)
+
+    # structural sanity only available on a fresh run (model isn't cached)
+    model = getattr(run_or_load, "_last_model", None)
+    if model is not None:
+        print(f"\nSprings: {model.spring_nodes.size}")
+        print(f"n_dof = {model.n_dof}, expected {n_nodes + 1}")
+        print(f"mass_dof = {model.mass_dof}, expected {n_nodes}")
+        print(f"M on mass DOF: {model.mass[model.mass_dof, model.mass_dof]:.4g}")
+
+    # --- growth / decay ---
+    g = growth_rate(t, contact_force)
+    print("\n--- Perturbation response ---")
+    print(f"  Initial |F_tr|                = {g['init']:.3e} N")
+    print(f"  Final   |F_tr|                = {g['final']:.3e} N")
+    print(f"  Envelope ratio (endpoints)    = {g['ratio_endpoints']:.3e}  (beat-phase sensitive)")
+    print(f"  Envelope ratio (robust 10%)   = {g['ratio_robust']:.3e}")
+    if g["slope"] is not None:
+        print(f"  Peaks used                    = {g['n_peaks']}")
+        print(f"  Growth rate Re(lambda)        = {g['slope']:+.4f} +/- {g['slope_err']:.4f} 1/s")
+        print(f"  Verdict                       = {g['verdict']}")
+    else:
+        print(f"  {g['verdict']}")
+
+    # --- figure ---
+    param_text = (
+        f"V/c={Vc:.3f} (V={V:.2f} m/s)   M={M_mass:g} kg   K={K_contact:.0e} N/m   "
+        f"phi={phi:g}   gamma={NEWMARK_GAMMA:g}  beta={NEWMARK_BETA:.4f}   dt={dt:g} s\n"
+        f"H={tension:g}  rhoA={m:g}  ks={Kv:g}  L={spacing:g}  n_cells={n_cells}  "
+        f"t_max={t_max:g}   Re(lambda)="
+        + (f"{g['slope']:+.4f} 1/s  [{g['verdict']}]" if g['slope'] is not None else "n/a")
+    )
+
+    fig, axes = plt.subplots(3, 1, sharex=True, figsize=(9, 9))
+
+    axes[0].plot(t, u_point, label="w_c(t) string at contact")
+    axes[0].plot(t, z_mass, label="z(t) mass")
     axes[0].set_ylabel("Displacement [m]")
     axes[0].legend()
     axes[0].grid(True)
-    axes[1].plot(output.t, output.contact_force)
-    axes[1].set_xlabel("Time [s]")
+
+    axes[1].plot(t, contact_force)
     axes[1].set_ylabel("Contact force [N]")
     axes[1].grid(True)
-    plt.tight_layout()
+
+    # dense trace rasterised (keeps PDF small); peaks + fit stay vector
+    axes[2].semilogy(t, g["env"], lw=0.8, rasterized=True)
+    if g["slope"] is not None:
+        axes[2].semilogy(g["t_pk"], g["env_pk"], "r.", ms=5, label="envelope peaks")
+        axes[2].semilogy(g["t_pk"], np.exp(g["intercept"] + g["slope"] * g["t_pk"]),
+                         "k--", label=f"fit: {g['slope']:+.4f} 1/s")
+        axes[2].legend()
+    axes[2].set_xlabel("Time [s]")
+    axes[2].set_ylabel("|F_tr| [N]  (log)")
+    axes[2].grid(True, which="both")
+
+    fig.suptitle(param_text, fontsize=9, family="monospace")
+    fig.subplots_adjust(top=0.90)
+
+    # --- save (PNG for browsing, PDF vector for the thesis) ---
+    FIG_DIR.mkdir(exist_ok=True)
+    stem = datetime.now().strftime("%Y%m%d_%H%M%S_") + readable_tag()
+    png_path = FIG_DIR / f"{stem}.png"
+    pdf_path = FIG_DIR / f"{stem}.pdf"
+    fig.savefig(png_path, dpi=300, bbox_inches="tight")   # 300 dpi raster
+    fig.savefig(pdf_path, dpi=300, bbox_inches="tight")   # vector + rasterised trace
+    print(f"\nsaved: {png_path}")
+    print(f"saved: {pdf_path}")
+
     plt.show()
 
 
