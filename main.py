@@ -55,7 +55,7 @@ except ImportError:
 
 # --- time integration ---
 dt = 1e-4
-Vc = 0.6            # V/c, non-dimensional speed (control parameter)
+#Vc = 0.336363636            # V/c, non-dimensional speed (control parameter)
 
 # --- string ---
 tension = 2.0e4
@@ -64,11 +64,11 @@ m = 1.1             # mass per unit length of the string [kg/m]
 
 # --- derived wave speed and dimensional velocity ---
 c = np.sqrt(tension / m)     # string wave speed [m/s]
-V = Vc * c                   # dimensional load speed [m/s]
-
+V = 22.8641692487534                   # dimensional load speed [m/s]
+Vc = V / c
 # --- contact oscillator ---
-M_mass = 100        # mass [kg]
-K_contact = 1.0e4   # contact spring stiffness [N/m]
+M_mass = 89.2012735425335        # mass [kg]
+K_contact = 1.0e5   # contact spring stiffness [N/m]
 
 # --- periodic section ---
 spacing = 10.0
@@ -81,7 +81,7 @@ phi = 0                                        # support loss factor (0 = undamp
 omega_ref = 2.0 * np.pi * V / spacing          # support-passing frequency [rad/s]
 
 # --- run length ---
-t_max = 12
+t_max = 10
 
 # --- cache / output control ---
 FORCE_RERUN = False                 # True => recompute even if a cache hit exists
