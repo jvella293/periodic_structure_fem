@@ -68,7 +68,7 @@ V = Vc * c                   # dimensional load speed [m/s]
 
 # --- contact oscillator ---
 M_mass = 100        # mass [kg]
-K_contact = 1.0e5   # contact spring stiffness [N/m]
+K_contact = 1.0e4   # contact spring stiffness [N/m]
 
 # --- periodic section ---
 spacing = 10.0
