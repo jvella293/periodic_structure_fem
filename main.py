@@ -64,15 +64,17 @@ m = 1.1             # mass per unit length of the string [kg/m]
 
 # --- derived wave speed and dimensional velocity ---
 c = np.sqrt(tension / m)     # string wave speed [m/s]
-V = 22.8641692487534                   # dimensional load speed [m/s]
-Vc = V / c
+Vc = 0.2
+#V = 22.8641692487534                   # dimensional load speed [m/s]
+#Vc = V / c
+V = Vc * c
 # --- contact oscillator ---
-M_mass = 89.2012735425335        # mass [kg]
-K_contact = 1.0e5   # contact spring stiffness [N/m]
+M_mass = 75        # mass [kg]
+K_contact = 1.0e3   # contact spring stiffness [N/m]
 
 # --- periodic section ---
 spacing = 10.0
-n_cells = 325
+n_cells = 800
 element_length_requested = 0.05
 
 # --- vertical supports at periodic positions ---
@@ -81,7 +83,7 @@ phi = 0                                        # support loss factor (0 = undamp
 omega_ref = 2.0 * np.pi * V / spacing          # support-passing frequency [rad/s]
 
 # --- run length ---
-t_max = 10
+t_max = 30
 
 # --- cache / output control ---
 FORCE_RERUN = False                 # True => recompute even if a cache hit exists
