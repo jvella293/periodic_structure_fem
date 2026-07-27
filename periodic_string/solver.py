@@ -4,12 +4,10 @@ from dataclasses import dataclass
 
 import numpy as np
 from tqdm import tqdm
-from scipy import sparse
-from scipy.sparse.linalg import splu
 
 from periodic_string.assembly import AssembledModel, assemble_model
-from periodic_string.moving_load import wrap_load_position, contact_direction
-from periodic_string.newmark import NewmarkIntegrator, NewmarkState
+from periodic_string.moving_load import wrap_load_position, contact_triplet
+from periodic_string.newmark import NewmarkIntegrator, NewmarkState, ContactSolveCache
 
 
 @dataclass(frozen=True)
@@ -23,15 +21,19 @@ class SolverOutput:
     t_all : numpy.ndarray
         Full time vector used during integration.
     u_point : numpy.ndarray
-        Vertical displacement of the string at the contact point ``w_c(t) = N(t).T @ w``
+        String displacement at the contact point, ``w_c(t) = N(t).T @ w``.
     z_head : numpy.ndarray
-        Vertical position of the head mass, ``z1(t)`` (on the contact spring).
+        Vertical position of the contact mass, ``z1(t)``.
     z_frame : numpy.ndarray
-        Vertical position of the frame mass, ``z2(t)``.
+        Vertical position of the secondary mass, ``z2(t)``.
     contact_force : numpy.ndarray
         Contact spring force ``F(t) = K * (z1(t) - w_c(t))``.
     model : AssembledModel
         Assembled finite-element model used in the simulation.
+    n_contact_solves : int
+        Number of extra back-substitutions spent on ``A^-1 d`` (diagnostic:
+        should be roughly the number of elements traversed, NOT the number
+        of time steps).
     """
 
     t: np.ndarray
@@ -41,59 +43,7 @@ class SolverOutput:
     z_frame: np.ndarray
     contact_force: np.ndarray
     model: AssembledModel
-
-def _static_initial_state(
-    model: AssembledModel,
-    external_force: np.ndarray,
-    load_x_init: float,
-) -> NewmarkState:
-    """Compute the static-equilibrium initial state at the initial load position.
-
-    Solves ``(K_static + K * d_init d_init.T) u_0 = f`` with gravity on the
-    oscillator DOFs and the contact spring placed at ``load_x_init``. Returns
-    a state with ``u_0`` as the displacement and zero velocity/acceleration.
-
-    This removes the gravity-switch-on transient that would otherwise excite
-    the high-frequency contact mode at ``sqrt(K / m1)``.
-
-    Note: not used in the perturbation-stability runs (gravity off).
-
-    Parameters
-    ----------
-    model : AssembledModel
-        Assembled finite-element model.
-    external_force : numpy.ndarray
-        Constant nodal force vector (gravity on the oscillator DOFs).
-    load_x_init : float
-        Load position at ``t = 0``.
-
-    Returns
-    -------
-    NewmarkState
-        Initial state at static equilibrium with zero velocity and
-        acceleration.
-    """
-    free = model.free_dofs
-    d_init = contact_direction(
-        model.node_x,
-        load_x_init,
-        model.catenary_length,
-        model.n_dof,
-        model.contact_dof,
-    )
-    d_init_free = d_init[free]
-    d_init_sp = sparse.csr_matrix(d_init_free.reshape(-1, 1))
-    contact_block = model.contact_stiffness * (d_init_sp @ d_init_sp.T)
-    k_total_free = (model.stiffness[free, :][:, free] + contact_block).tocsc()
-
-    u_0 = np.zeros(model.n_dof)
-    u_0[free] = splu(k_total_free).solve(external_force[free])
-
-    return NewmarkState(
-        displacement=u_0,
-        velocity=np.zeros(model.n_dof),
-        acceleration=np.zeros(model.n_dof),
-    )
+    n_contact_solves: int = 0
 
 
 def solve_moving_load(
@@ -123,71 +73,17 @@ def solve_moving_load(
 ) -> SolverOutput:
     """Simulate a moving 2-DOF oscillator on a periodic string.
 
-    Assembles the string + head + frame model, integrates with Newmark's
-    method including the moving contact spring as a rank-1 stiffness
-    update at each step, and records the string displacement at contact,
-    both oscillator positions, and the contact force.
+    Perturbation-stability formulation: no gravity (it cancels on
+    subtraction), a small seeded perturbation on both oscillator DOFs, and
+    the contact spring applied as a rank-1 stiffness update at each step.
 
-    Parameters
-    ----------
-    tension : float
-        Tensile force in the string.
-    damp_string : float
-        Rayleigh-type damping factor on the string stiffness.
-        Set to 0 for an undamped string as in the model equation.
-    mass_per_length : float
-        Mass per unit length of the string.
-    kv : float
-        Vertical spring stiffness at cell boundaries.
-    phi : float
-        Loss factor of the complex support stiffness ``kv * (1 + i * phi)``.
-    omega_ref : float
-        Reference circular frequency [rad/s] at which the hysteretic
-        support damping is converted to equivalent viscous damping,
-        ``damp_rp = phi / omega_ref``.
-    head_mass : float
-        Head mass ``m1`` [kg] (on the contact spring).
-    frame_mass : float
-        Frame mass ``m2`` [kg].
-    susp_stiffness : float
-        Suspension stiffness ``k1`` [N/m] between head and frame.
-    susp_damping : float
-        Suspension viscous damping ``c1`` [N s/m].
-    base_stiffness : float
-        Frame-to-base stiffness ``k2`` [N/m] (0 = frame not grounded).
-    base_damping : float
-        Frame-to-base viscous damping ``c2`` [N s/m].
-    contact_stiffness : float
-        Contact spring stiffness ``K`` [N/m].
-    element_length : float
-        Length of each string element.
-    n_elements_per_cell : int
-        Number of string elements per periodic cell.
-    n_nodes : int
-        Total number of nodes in the mesh.
-    catenary_length : float
-        Total length of one periodic catenary span.
-    dt : float
-        Integration time step.
-    velocity : float
-        Load travel speed along the catenary.
-        If zero, the load is placed at mid-span.
-    t_max : float
-        End time of the simulation.
-    dt_out : float or None, optional
-        Output sampling interval. Defaults to ``dt``.
-    show_progress : bool, optional
-        If ``True``, display tqdm progress bars (default True).
-
-    Returns
-    -------
-    SolverOutput
-        Output time histories and the assembled model.
+    Parameters are as in the previous version; see AssembledModel for the
+    oscillator layout (m1 on the contact spring, m2 below through k12).
     """
     if dt_out is None:
         dt_out = dt
 
-    damp_rp = phi / omega_ref
+    damp_rp = phi / omega_ref if omega_ref else 0.0
 
     model = assemble_model(
         tension=tension,
@@ -215,74 +111,73 @@ def solve_moving_load(
         free_dofs=model.free_dofs,
         dt=dt,
     )
+    cache = ContactSolveCache(integrator, model.n_dof, model.contact_dof)
 
-    # Perturbation-stability run: no gravity (it cancels in the
-    # perturbation equations), homogeneous system + seeded perturbation.
     external_force = np.zeros(model.n_dof)
+    x_min, x_max = 0.0, catenary_length
 
-    x_min = model.node_x.min()
-    x_max = catenary_length
-
-    load_x_init = 0.0 if velocity != 0.0 else 0.5 * catenary_length
-    load_x_init = wrap_load_position(load_x_init, x_min, x_max)
     state = integrator.initial_state(model.n_dof)
-    # Seed BOTH oscillator DOFs so that a mode with a node at z1 is
-    # still excited (a z1-only seed can under-excite the second mode).
+    # Seed BOTH oscillator DOFs: a z1-only seed can under-excite a mode with
+    # a near-node at the contact mass.
     state.velocity[model.contact_dof] = 1.0e-6
     state.velocity[model.frame_dof] = 1.0e-6
 
     t_all = np.arange(0.0, t_max + 0.5 * dt, dt)
     output_stride = max(1, int(round(dt_out / dt)))
-    t_out: list[float] = []
-    u_point: list[float] = []
-    z_head: list[float] = []
-    z_frame: list[float] = []
-    contact_force: list[float] = []
+    n_out = (t_all.size + output_stride - 1) // output_stride
+
+    t_out = np.empty(n_out)
+    u_point = np.empty(n_out)
+    z_head = np.empty(n_out)
+    z_frame = np.empty(n_out)
+    contact_force = np.empty(n_out)
+    n_written = 0
 
     for step_index, time in enumerate(
         tqdm(t_all, desc="Newmark time integration", disable=not show_progress)
     ):
-        if velocity != 0.0:
-            load_x = velocity * time
-        else:
-            load_x = 0.5 * catenary_length
-
+        load_x = velocity * time if velocity != 0.0 else 0.5 * catenary_length
         load_x = wrap_load_position(load_x, x_min, x_max)
-        d = contact_direction(model.node_x, load_x, x_max, model.n_dof, model.contact_dof)
+
+        dofs, values, left, right, w_left, w_right = contact_triplet(
+            load_x, element_length, n_nodes, model.contact_dof
+        )
+        contact_solved = cache.get(left, right, w_left, w_right)
 
         state = integrator.step(
             state=state,
-            contact_direction=d,
+            contact_dofs=dofs,
+            contact_values=values,
+            contact_solved=contact_solved,
             contact_stiffness=model.contact_stiffness,
             external_force=external_force,
             mass=model.mass,
             damping=model.damping,
         )
 
-        if not np.isfinite(state.displacement).all():
-            print(f"Non-finite state at t = {time:.4f} s — stopping early.")
-            break
-
         if step_index % output_stride == 0:
-            # w_c(t) = N(t).T @ w — the string DOF entries of d are N(t)
-            shape = d.copy()
-            shape[model.contact_dof] = 0.0
-            w_c = float(shape @ state.displacement)
-            z1 = float(state.displacement[model.contact_dof])
-            z2 = float(state.displacement[model.frame_dof])
+            u = state.displacement
+            if not np.isfinite(u[model.contact_dof]):
+                print(f"Non-finite state at t = {time:.4f} s — stopping early.")
+                break
+            # w_c(t) = N(t).T @ w — only two entries are nonzero.
+            w_c = w_left * u[left] + w_right * u[right]
+            z1 = u[model.contact_dof]
 
-            t_out.append(time)
-            u_point.append(w_c)
-            z_head.append(z1)
-            z_frame.append(z2)
-            contact_force.append(model.contact_stiffness * (z1 - w_c))
+            t_out[n_written] = time
+            u_point[n_written] = w_c
+            z_head[n_written] = z1
+            z_frame[n_written] = u[model.frame_dof]
+            contact_force[n_written] = model.contact_stiffness * (z1 - w_c)
+            n_written += 1
 
     return SolverOutput(
-        t=np.asarray(t_out),
+        t=t_out[:n_written],
         t_all=t_all,
-        u_point=np.asarray(u_point),
-        z_head=np.asarray(z_head),
-        z_frame=np.asarray(z_frame),
-        contact_force=np.asarray(contact_force),
+        u_point=u_point[:n_written],
+        z_head=z_head[:n_written],
+        z_frame=z_frame[:n_written],
+        contact_force=contact_force[:n_written],
         model=model,
+        n_contact_solves=cache.n_solves,
     )

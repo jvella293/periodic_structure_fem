@@ -13,32 +13,24 @@ Oscillator layout (matches the Floquet code conventions)
                           |
                        [m2, z2]   (ungrounded)
 
-Model selection (same names/semantics as the Floquet code; m1 is the
-stability-plane coordinate in both cases):
-
   model = "2dof"          : m2 = mu * m1        (fixed mass ratio mu = m2/m1)
   model = "2dof_fixedM2"  : m2 = m2_fixed       (constant secondary mass)
 
-(The Floquet "sdof" case corresponds to the old 1-DOF time-domain code.)
+Growth-rate estimator
+---------------------
+Re(lambda) is fitted to the UPPER HULL of |F_tr| (rolling maximum), not to
+find_peaks() maxima. find_peaks returns local maxima that sit inside the
+beat nulls — three decades below the hull — and those drag a straight-line
+log fit far more than a small Re(lambda) moves it.
+
+For a 2T (subharmonic) instability the response lives at f_pass/2, so the
+hull window must span SEVERAL subharmonic periods: HULL_PERIODS is measured
+in support-passing periods, and 2T needs >= 4 (i.e. >= 2 subharmonic
+periods). Set HULL_PERIODS = 2 only for a 1T (harmonic) tongue.
 
 Input convention
 ----------------
-The non-dimensional speed ``Vc = V / c`` is the control parameter; the
-dimensional speed ``V`` is derived from the string wave speed
-``c = sqrt(H / rhoA)``. Figure names and titles use V/c.
-
-Features
---------
-  * Parameter-hash caching: identical parameters are NOT re-simulated; the
-    cached result is loaded and re-plotted instead. Set FORCE_RERUN = True
-    after changing solver/newmark CODE (the hash tracks parameters only,
-    not source code).
-  * Figures saved as PNG (quick view, 300 dpi) and PDF (vector, for the
-    thesis), with all parameters printed across the top and encoded in the
-    filename. The dense |F_tr| trace is rasterised inside the PDF to keep it
-    small while axes/text/peaks stay vector.
-  * Newmark gamma/beta are imported from newmark.py so the filename always
-    reflects what actually ran.
+Vc = V / c is the control parameter; c = sqrt(H / rhoA).
 """
 
 from __future__ import annotations
@@ -50,12 +42,10 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.signal import find_peaks
 
 from periodic_string.assembly import mesh_parameters
 from periodic_string.solver import solve_moving_load
 
-# Surface the Newmark coefficients so the filename reflects what actually ran.
 try:
     from periodic_string.newmark import NEWMARK_GAMMA, NEWMARK_BETA
 except ImportError:
@@ -68,7 +58,11 @@ except ImportError:
 # ======================================================================
 
 # --- time integration ---
-dt = 1e-4
+# dt is limited by the moving contact (elements/step < 1), NOT by the
+# oscillator modes: with a soft k01 the sqrt(k01/m1) mode is slow. See the
+# "Numerical resolution" block printed at runtime. Verify any dt increase
+# with the refinement protocol: halve dt, confirm Re(lambda) is unchanged.
+dt = 5e-4
 
 # --- string ---
 tension = 1.0e4
@@ -77,16 +71,19 @@ m = 1.1             # mass per unit length of the string [kg/m]
 
 # --- derived wave speed and dimensional velocity ---
 c = np.sqrt(tension / m)     # string wave speed [m/s]
-Vc = 0.2
-V = Vc * c
-V = 22.247460415730487
-Vc = V/c
+V = 22.247460415730487       # dimensional speed taken from the Floquet point
+Vc = V / c
 
 # --- contact oscillator: 2 DOF (names match the Floquet code) ---
 model = "2dof"      # "2dof" (m2 = mu*m1) | "2dof_fixedM2" (m2 fixed in kg)
-m1 = 86.69           # contact mass [kg] — stability-plane coordinate
+m1 = 86.693         # contact mass [kg] — CENTRE of the Floquet 2T tongue
 mu = 0.5            # mass ratio m2/m1        (used only when model = "2dof")
 m2_fixed = 50.0     # secondary mass [kg]     (used only when model = "2dof_fixedM2")
+
+# Floquet tongue bracket for this (V, mu, k01, k12), for reference/printout.
+# Set to None if you are not sitting on a known tongue.
+TONGUE = (83.26700378236632, 90.11862622013201)   # (m1_lo, m1_hi), 2T
+TONGUE_ORDER = 2                                   # 2 => 2T (subharmonic), 1 => 1T
 
 if model == "2dof":
     m2 = mu * m1
@@ -102,15 +99,19 @@ c12 = 0.0           # secondary viscous damping [N s/m] (0 = undamped validation
 # --- periodic section ---
 spacing = 10.0
 n_cells = 800
-element_length_requested = 0.05
+element_length_requested = 0.1
 
 # --- vertical supports at periodic positions ---
-Kv = 4.0e3                                    # discrete support stiffness [N/m]
+Kv = 4.0e3
 phi = 0                                        # support loss factor (0 = undamped validation)
-omega_ref = 2.0 * np.pi * V / spacing          # support-passing frequency [rad/s]
+omega_ref = 2.0 * np.pi * V / spacing
 
 # --- run length ---
-t_max = 15
+t_max = 50
+
+# --- growth-rate estimator ---
+SETTLE_PERIODS = 3.0    # support-passing periods discarded as transient
+HULL_PERIODS = 4.0      # rolling-max window [support-passing periods]; >=4 for 2T
 
 # --- cache / output control ---
 FORCE_RERUN = False
@@ -129,27 +130,25 @@ element_length, n_elements_per_cell, n_nodes, catenary_length = mesh_parameters(
 
 def oscillator_frequencies() -> np.ndarray:
     """Natural frequencies [Hz] of the 2-DOF oscillator with the contact
-    spring engaged (string held rigid): eig of M^-1 K on
+    spring engaged and the string held rigid:
 
         K_osc = [[k01 + k12, -k12],     M_osc = diag(m1, m2)
                  [-k12,       k12]]
 
-    These are the frequencies that can tune into parametric resonance
-    with the support-passing frequency V / L.
+    These are UPPER BOUNDS on the true coupled frequencies (the string is
+    compliant, which softens both modes).
     """
     k_osc = np.array([[k01 + k12, -k12], [-k12, k12]])
     m_osc = np.diag([m1, m2])
-    eigvals = np.linalg.eigvals(np.linalg.solve(m_osc, k_osc))
-    eigvals = np.sort(np.real(eigvals))
-    eigvals = np.clip(eigvals, 0.0, None)   # guard tiny negative round-off
-    return np.sqrt(eigvals) / (2.0 * np.pi)
+    eigvals = np.sort(np.linalg.eigvals(np.linalg.solve(m_osc, k_osc)).real)
+    return np.sqrt(np.clip(eigvals, 0.0, None)) / (2.0 * np.pi)
 
 
 def collect_params() -> dict:
     """Everything that affects the result. Any change => new hash => rerun.
 
-    m1 is the control parameter; m2 is stored too so the hash is unique
-    regardless of which model derived it.
+    Estimator settings are deliberately EXCLUDED: they are post-processing,
+    so changing them re-analyses the cached run instead of resimulating.
     """
     return {
         "Vc": Vc, "V": V, "tension": tension, "damp_string": damp_string, "m": m,
@@ -172,7 +171,7 @@ def readable_tag() -> str:
     return (
         f"{model}_Vc{Vc:.3f}_m1_{m1:g}_m2_{m2:g}"
         f"_k01_{k01:.0e}_k12_{k12:.0e}_phi{phi:g}"
-        f"_g{NEWMARK_GAMMA:g}_dt{dt:g}_nc{n_cells}"
+        f"_g{NEWMARK_GAMMA:g}_dt{dt:g}_el{element_length:g}_nc{n_cells}_t{t_max:g}"
     )
 
 
@@ -190,79 +189,92 @@ def run_or_load(params: dict):
     reason = "FORCE_RERUN" if cache_file.exists() else "no cache"
     print(f"Cache MISS ({h}, {reason}) -> running simulation.")
     output = solve_moving_load(
-        tension=tension,
-        damp_string=damp_string,
-        mass_per_length=m,
-        kv=Kv,
-        phi=phi,
-        omega_ref=omega_ref,
-        head_mass=m1,
-        frame_mass=m2,
-        susp_stiffness=k12,
-        susp_damping=c12,
-        base_stiffness=0.0,   # m2 is ungrounded (matches the Floquet model)
-        base_damping=0.0,
+        tension=tension, damp_string=damp_string, mass_per_length=m,
+        kv=Kv, phi=phi, omega_ref=omega_ref,
+        head_mass=m1, frame_mass=m2,
+        susp_stiffness=k12, susp_damping=c12,
+        base_stiffness=0.0, base_damping=0.0,   # m2 ungrounded, as in Floquet
         contact_stiffness=k01,
         element_length=element_length,
         n_elements_per_cell=n_elements_per_cell,
-        n_nodes=n_nodes,
-        catenary_length=catenary_length,
-        dt=dt,
-        velocity=V,
-        t_max=t_max,
+        n_nodes=n_nodes, catenary_length=catenary_length,
+        dt=dt, velocity=V, t_max=t_max,
     )
     np.savez(
         cache_file,
         t=output.t, u_point=output.u_point,
         z1=output.z_head, z2=output.z_frame,
-        contact_force=output.contact_force,
-        **params,
+        contact_force=output.contact_force, **params,
     )
     print(f"  cached -> {cache_file}")
     run_or_load._last_model = output.model
     return output.t, output.u_point, output.z_head, output.z_frame, output.contact_force
 
 
-def growth_rate(t, contact_force, settle_periods=3.0):
-    """Robust Re(lambda) from the UPPER envelope (local maxima).
+def growth_rate(t, contact_force, settle_periods=SETTLE_PERIODS,
+                hull_periods=HULL_PERIODS):
+    """Beat-robust Re(lambda) fitted to the UPPER HULL of |F_tr|.
 
-    Fitting the peaks (not the raw |F|) ignores beat dips that would corrupt a
-    single-line slope. Returns a dict including the uncertainty and a
-    noise-gated verdict so a near-neutral point is not falsely signed.
+    A rolling maximum over ``hull_periods`` support-passing periods removes
+    the zero crossings and the beat nulls, leaving the envelope. Reports a
+    split-half consistency check (is this really a single exponential?) and
+    a resolvability floor (a rate below ln(1.1)/T changes the envelope by
+    less than 10% end-to-end and cannot be signed).
     """
-    env = np.abs(contact_force)
-    T_period = spacing / V
-    settle = t > settle_periods * T_period
-    t_fit, env_fit = t[settle], env[settle]
+    env = np.abs(np.asarray(contact_force, dtype=float))
+    t = np.asarray(t, dtype=float)
 
-    peak_idx, _ = find_peaks(env_fit)
-    out = {
-        "env": env, "init": env[0], "final": env[-1],
-        "ratio_endpoints": env[-1] / max(env[0], 1e-300),
-        "slope": None,
-    }
-    n10 = max(1, len(env) // 10)
-    out["ratio_robust"] = env[-n10:].mean() / max(env[:n10].mean(), 1e-300)
+    T_pass = spacing / V
+    dt_out = float(np.median(np.diff(t)))
+    win = max(3, int(round(hull_periods * T_pass / dt_out)))
+    pad = win // 2
 
-    if peak_idx.size >= 3:
-        t_pk = t_fit[peak_idx]
-        env_pk = env_fit[peak_idx]
-        good = env_pk > 0.0
-        (slope, intercept), cov = np.polyfit(
-            t_pk[good], np.log(env_pk[good]), 1, cov=True
-        )
-        slope_err = float(np.sqrt(cov[0, 0]))
-        if abs(slope) < 2.0 * slope_err:
-            verdict = "NEUTRAL (rate within noise)"
-        elif slope > 0:
-            verdict = "UNSTABLE"
-        else:
-            verdict = "stable"
-        out.update(slope=float(slope), intercept=float(intercept),
-                   slope_err=slope_err, verdict=verdict,
-                   t_pk=t_pk, env_pk=env_pk, n_peaks=int(t_pk.size))
+    # Rolling maximum via a strided view — O(n * win) but vectorised.
+    padded = np.pad(env, (pad, pad), mode="edge")
+    strided = np.lib.stride_tricks.sliding_window_view(padded, 2 * pad + 1)
+    hull = strided.max(axis=1)[: env.size]
+
+    keep = t > settle_periods * T_pass
+    if pad > 0:
+        keep[-pad:] = False          # rolling max is edge-biased here
+    keep &= hull > 0.0
+
+    out = {"env": env, "hull": hull, "slope": None}
+    t_h, e_h = t[keep], hull[keep]
+    if t_h.size < 10:
+        out["verdict"] = "too few hull points - run longer"
+        return out
+
+    log_e = np.log(e_h)
+    (slope, intercept), cov = np.polyfit(t_h, log_e, 1, cov=True)
+    slope_err = float(np.sqrt(cov[0, 0]))
+
+    half = t_h.size // 2
+    s1 = float(np.polyfit(t_h[:half], log_e[:half], 1)[0])
+    s2 = float(np.polyfit(t_h[half:], log_e[half:], 1)[0])
+    # polyfit's error is optimistic (hull points are strongly correlated),
+    # so the split-half test uses a relative tolerance with an absolute floor.
+    consistent = abs(s1 - s2) < max(0.25 * max(abs(s1), abs(s2)), 0.01)
+
+    T_win = t_h[-1] - t_h[0]
+    rate_floor = float(np.log(1.1) / T_win)
+
+    if abs(slope) < max(2.0 * slope_err, rate_floor):
+        verdict = f"NEUTRAL (|rate| below resolvable {rate_floor:.4f} 1/s)"
+    elif slope > 0:
+        verdict = "UNSTABLE"
     else:
-        out["verdict"] = f"too few peaks ({peak_idx.size}) - run longer"
+        verdict = "stable"
+    if not consistent:
+        verdict += "  [!] halves disagree - not a clean exponential"
+
+    out.update(
+        slope=float(slope), intercept=float(intercept), slope_err=slope_err,
+        slope_first=s1, slope_second=s2, consistent=bool(consistent),
+        rate_floor=rate_floor, verdict=verdict,
+        t_hull=t_h, env_hull=e_h, n_hull=int(t_h.size),
+        ratio_hull=float(e_h[-1] / e_h[0]), t_win=float(T_win),
+    )
     return out
 
 
@@ -274,83 +286,100 @@ def main() -> None:
     params = collect_params()
 
     print(
-        "Mesh: "
-        f"requested element length={element_length_requested:.6g} m, "
+        f"Mesh: requested element length={element_length_requested:.6g} m, "
         f"effective={element_length:.6g} m, "
         f"{n_elements_per_cell} elements/cell, {n_nodes} nodes"
     )
 
-    # --- physics-derived diagnostics ---
-    f_osc = oscillator_frequencies()          # both oscillator modes [Hz]
-    f_max = f_osc[-1]
-    T_min = 1.0 / f_max if f_max > 0 else np.inf
+    f_osc = oscillator_frequencies()
     f_pass = V / spacing
+    T_pass = 1.0 / f_pass
+    f_unstable = f_pass / TONGUE_ORDER          # 2T => f_pass/2
 
-    # --- numerical-resolution diagnostics ---
-    points_per_fast_period = T_min / dt
-    load_advance_per_step = V * dt
-    elements_per_step = load_advance_per_step / element_length
+    points_per_fast_period = (1.0 / f_osc[-1]) / dt if f_osc[-1] > 0 else np.inf
+    elements_per_step = V * dt / element_length
 
-    # --- wake re-encounter horizon ---
     wake_safety_factor = 0.8
     t_wake = catenary_length / (c + V)
     t_wake_safe = wake_safety_factor * t_wake
-    loops_in_run = V * t_max / catenary_length
 
     print("\n--- Physics ---")
     print(f"  Model                         = {model}"
-          + (f"  (mu = m2/m1 = {mu:g})" if model == "2dof" else f"  (m2 fixed = {m2_fixed:g} kg)"))
+          + (f"  (mu = {mu:g})" if model == "2dof" else f"  (m2 = {m2_fixed:g} kg)"))
     print(f"  Masses                        = m1 = {m1:g} kg, m2 = {m2:g} kg")
     print(f"  Wave speed c                  = {c:.2f} m/s")
-    print(f"  V/c                           = {Vc:.3f}  (V = {V:.2f} m/s, "
-          f"{'sub-critical' if Vc < 1 else 'super-critical'})")
-    print(f"  Oscillator modes (k01 engaged)= {f_osc[0]:.2f} Hz, {f_osc[1]:.2f} Hz")
-    print(f"  Support-passing frequency     = {f_pass:.2f} Hz")
-    print(f"  f_i / f_pass                  = {f_osc[0]/f_pass:.3f}, {f_osc[1]/f_pass:.3f}"
-          f"  (=n/2 => parametric tongues)")
+    print(f"  V/c                           = {Vc:.4f}  (V = {V:.4f} m/s)")
+    print(f"  Oscillator modes (rigid str.) = {f_osc[0]:.3f} Hz, {f_osc[1]:.3f} Hz  (upper bounds)")
+    print(f"  Support-passing frequency     = {f_pass:.4f} Hz  (T_pass = {T_pass:.4f} s)")
+    print(f"  {TONGUE_ORDER}T response frequency        = {f_unstable:.4f} Hz  "
+          f"(period {1/f_unstable:.4f} s)")
+
+    if TONGUE is not None:
+        lo, hi = TONGUE
+        centre, width = 0.5 * (lo + hi), hi - lo
+        pos = (m1 - lo) / width
+        inside = 0.0 < pos < 1.0
+        print(f"\n--- Floquet tongue ({TONGUE_ORDER}T) ---")
+        print(f"  m1 bracket                    = [{lo:.3f}, {hi:.3f}] kg, "
+              f"centre {centre:.3f}, width {width:.3f} kg ({width/centre*100:.2f}%)")
+        print(f"  m1 = {m1:g} sits at {pos*100:.1f}% across "
+              f"({'INSIDE' if inside else 'OUTSIDE — expect no growth'})")
+        if inside:
+            print(f"  Rate relative to tongue peak  ~ {2*np.sqrt(pos*(1-pos)):.2f}"
+                  f"  (semicircular profile)")
+        # Mathieu estimate: peak rate ~ tongue half-width measured in omega.
+        # With mu fixed, all oscillator frequencies scale as m1^(-1/2).
+        rate_max = 0.5 * (0.5 * width / centre) * (2 * np.pi * f_unstable)
+        rate_here = rate_max * (2 * np.sqrt(pos * (1 - pos)) if inside else 0.0)
+        print(f"  ESTIMATED Re(lambda)_max      ~ {rate_max:.4f} 1/s  "
+              f"(order-of-magnitude only)")
+        if inside:
+            print(f"  ESTIMATED Re(lambda) here     ~ {rate_here:.4f} 1/s"
+                  f"  => x{np.exp(rate_here*t_max):.1f} over t_max = {t_max:g} s")
+            print(f"  t_max for one decade          ~ {np.log(10)/max(rate_here,1e-12):.0f} s")
+        print("  >>> Replace this estimate with the ACTUAL Floquet Re(lambda) "
+              "when you have it.")
 
     print("\n--- Numerical resolution ---")
     print(f"  Points per FASTEST osc period = {points_per_fast_period:.1f}  (want >= 20)")
-    print(f"  Load advance per step         = {load_advance_per_step*1e3:.3f} mm")
     print(f"  Elements per step             = {elements_per_step:.3f}  (want < 1)")
     print(f"  Newmark gamma / beta          = {NEWMARK_GAMMA:g} / {NEWMARK_BETA:.4f}")
+    if NEWMARK_GAMMA > 0.5:
+        print("  WARNING: gamma > 0.5 adds algorithmic damping, which biases "
+              "Re(lambda) DOWNWARD. Use gamma = 0.5 for rate measurement.")
 
     print("\n--- Wake horizon ---")
     print(f"  Wake re-encounter at t        = {t_wake:.2f} s")
-    print(f"  Safe horizon ({wake_safety_factor:.0%} margin)        = {t_wake_safe:.2f} s")
+    print(f"  Safe horizon ({wake_safety_factor:.0%} margin)       = {t_wake_safe:.2f} s")
     print(f"  Requested t_max               = {t_max:.2f} s")
-    print(f"  Load loops around domain      = {loops_in_run:.1f}")
     if t_max > t_wake_safe:
-        print(f"  WARNING: t_max exceeds the {wake_safety_factor:.0%}-safe horizon by "
-              f"{t_max - t_wake_safe:.2f} s.")
-        print(f"  Reduce t_max to <= {t_wake_safe:.2f} s, or extend domain to "
-              f">= {(c + V) * t_max / wake_safety_factor:.0f} m "
-              f"(n_cells >= {int(np.ceil((c + V) * t_max / (wake_safety_factor * spacing)))}).")
+        need = int(np.ceil((c + V) * t_max / (wake_safety_factor * spacing)))
+        print(f"  WARNING: t_max exceeds the safe horizon. "
+              f"Reduce t_max to <= {t_wake_safe:.2f} s or set n_cells >= {need}.")
 
     # --- run (or load from cache) ---
     t, u_point, z1, z2, contact_force = run_or_load(params)
 
-    # structural sanity only available on a fresh run (model isn't cached)
     fem = getattr(run_or_load, "_last_model", None)
     if fem is not None:
         print(f"\nSprings: {fem.spring_nodes.size}")
         print(f"n_dof = {fem.n_dof}, expected {n_nodes + 2}")
-        print(f"contact_dof (z1) = {fem.contact_dof}, frame_dof (z2) = {fem.frame_dof}")
-        print(f"m1 on z1 DOF: {fem.mass[fem.contact_dof, fem.contact_dof]:.4g}")
-        print(f"m2 on z2 DOF: {fem.mass[fem.frame_dof, fem.frame_dof]:.4g}")
+        print(f"m1 on z1 DOF: {fem.mass[fem.contact_dof, fem.contact_dof]:.4g}, "
+              f"m2 on z2 DOF: {fem.mass[fem.frame_dof, fem.frame_dof]:.4g}")
         print(f"k12 coupling K[z1,z2]: {fem.stiffness[fem.contact_dof, fem.frame_dof]:.4g}"
               f" (expected {-k12:g})")
 
     # --- growth / decay ---
     g = growth_rate(t, contact_force)
-    print("\n--- Perturbation response ---")
-    print(f"  Initial |F_tr|                = {g['init']:.3e} N")
-    print(f"  Final   |F_tr|                = {g['final']:.3e} N")
-    print(f"  Envelope ratio (endpoints)    = {g['ratio_endpoints']:.3e}  (beat-phase sensitive)")
-    print(f"  Envelope ratio (robust 10%)   = {g['ratio_robust']:.3e}")
+    print("\n--- Perturbation response (upper-hull fit) ---")
     if g["slope"] is not None:
-        print(f"  Peaks used                    = {g['n_peaks']}")
+        print(f"  Fit window                    = {g['t_win']:.2f} s, {g['n_hull']} hull points")
+        print(f"  Hull ratio over window        = {g['ratio_hull']:.3e}")
         print(f"  Growth rate Re(lambda)        = {g['slope']:+.4f} +/- {g['slope_err']:.4f} 1/s")
+        print(f"  Split-half (1st / 2nd)        = {g['slope_first']:+.4f} / "
+              f"{g['slope_second']:+.4f} 1/s  "
+              f"[{'consistent' if g['consistent'] else 'INCONSISTENT'}]")
+        print(f"  Resolvable floor              = {g['rate_floor']:.4f} 1/s")
         print(f"  Verdict                       = {g['verdict']}")
     else:
         print(f"  {g['verdict']}")
@@ -359,9 +388,10 @@ def main() -> None:
     model_str = (f"{model} (mu={mu:g})" if model == "2dof"
                  else f"{model} (m2={m2_fixed:g} kg)")
     param_text = (
-        f"{model_str}: m1={m1:g} kg, m2={m2:g} kg   V/c={Vc:.3f} (V={V:.2f} m/s)\n"
+        f"{model_str}: m1={m1:g} kg, m2={m2:g} kg   V/c={Vc:.4f} (V={V:.3f} m/s)\n"
         f"k01={k01:.0e}  k12={k12:.0e}  c12={c12:g}   phi={phi:g}   "
-        f"gamma={NEWMARK_GAMMA:g}  beta={NEWMARK_BETA:.4f}   dt={dt:g} s\n"
+        f"gamma={NEWMARK_GAMMA:g}  beta={NEWMARK_BETA:.4f}   dt={dt:g} s  "
+        f"el={element_length:g} m\n"
         f"H={tension:g}  rhoA={m:g}  ks={Kv:g}  L={spacing:g}  n_cells={n_cells}  "
         f"t_max={t_max:g}   Re(lambda)="
         + (f"{g['slope']:+.4f} 1/s  [{g['verdict']}]" if g['slope'] is not None else "n/a")
@@ -380,12 +410,13 @@ def main() -> None:
     axes[1].set_ylabel("Contact force [N]")
     axes[1].grid(True)
 
-    axes[2].semilogy(t, g["env"], lw=0.8, rasterized=True)
+    axes[2].semilogy(t, g["env"], lw=0.6, alpha=0.5, rasterized=True, label="|F_tr|")
+    axes[2].semilogy(t, g["hull"], lw=1.2, color="r", label="upper hull (rolling max)")
     if g["slope"] is not None:
-        axes[2].semilogy(g["t_pk"], g["env_pk"], "r.", ms=5, label="envelope peaks")
-        axes[2].semilogy(g["t_pk"], np.exp(g["intercept"] + g["slope"] * g["t_pk"]),
+        axes[2].semilogy(g["t_hull"],
+                         np.exp(g["intercept"] + g["slope"] * g["t_hull"]),
                          "k--", label=f"fit: {g['slope']:+.4f} 1/s")
-        axes[2].legend()
+    axes[2].legend(loc="lower right", fontsize=8)
     axes[2].set_xlabel("Time [s]")
     axes[2].set_ylabel("|F_tr| [N]  (log)")
     axes[2].grid(True, which="both")
@@ -395,12 +426,10 @@ def main() -> None:
 
     FIG_DIR.mkdir(exist_ok=True)
     stem = datetime.now().strftime("%Y%m%d_%H%M%S_") + readable_tag()
-    png_path = FIG_DIR / f"{stem}.png"
-    pdf_path = FIG_DIR / f"{stem}.pdf"
-    fig.savefig(png_path, dpi=300, bbox_inches="tight")
-    fig.savefig(pdf_path, dpi=300, bbox_inches="tight")
-    print(f"\nsaved: {png_path}")
-    print(f"saved: {pdf_path}")
+    for ext in ("png", "pdf"):
+        path = FIG_DIR / f"{stem}.{ext}"
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"saved: {path}")
 
     plt.show()
 
