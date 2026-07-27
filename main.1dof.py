@@ -1,27 +1,9 @@
 # Created by RvL
-"""Moving 2-DOF oscillator (head + frame) on a periodic taut string.
+"""Moving load on a periodic taut string.
 
 Perturbation-stability run: gravity off, small seeded perturbation, the
 growth/decay rate Re(lambda) of the contact-force envelope is the validation
 quantity (compare against the Hill/Floquet dominant exponent at phi = 0).
-
-Oscillator layout
------------------
-    string ~~~ K ~~~ [m1, z1]  (head — the "current mass" of the 1DOF model)
-                        |
-                     k1, c1
-                        |
-                     [m2, z2]  (frame)
-                        |
-                     k2, c2    (to rigid base; set k2 = c2 = 0 if absent)
-
-Two study cases, selected with CASE below; M_total stays the control
-parameter of the (M, V/c) stability plane in both:
-
-  CASE = "ratio"      : m1 = MASS_RATIO * M_total, m2 = (1 - MASS_RATIO) * M_total
-                        (both masses scale together, fixed ratio)
-  CASE = "fixed_head" : m1 = M1_FIXED (constant), m2 = M_total - M1_FIXED
-                        (only the frame mass varies with M_total)
 
 Input convention
 ----------------
@@ -58,6 +40,8 @@ from periodic_string.assembly import mesh_parameters
 from periodic_string.solver import solve_moving_load
 
 # Surface the Newmark coefficients so the filename reflects what actually ran.
+# newmark.py should expose these as module constants; the fallback is only a
+# safety net (and would be wrong if newmark.py uses different values).
 try:
     from periodic_string.newmark import NEWMARK_GAMMA, NEWMARK_BETA
 except ImportError:
@@ -71,6 +55,7 @@ except ImportError:
 
 # --- time integration ---
 dt = 1e-4
+#Vc = 0.336363636            # V/c, non-dimensional speed (control parameter)
 
 # --- string ---
 tension = 2.0e4
@@ -80,31 +65,12 @@ m = 1.1             # mass per unit length of the string [kg/m]
 # --- derived wave speed and dimensional velocity ---
 c = np.sqrt(tension / m)     # string wave speed [m/s]
 Vc = 0.2
+#V = 22.8641692487534                   # dimensional load speed [m/s]
+#Vc = V / c
 V = Vc * c
-
-# --- contact oscillator: 2 DOF (head z1 on contact spring, frame z2) ---
-CASE = "ratio"        # "ratio" or "fixed_head"
-M_total = 75          # total oscillator mass [kg] — stability-plane coordinate
-MASS_RATIO = 0.25     # m1 / M_total    (used when CASE == "ratio")
-M1_FIXED = 18.75      # head mass [kg]  (used when CASE == "fixed_head")
-
-if CASE == "ratio":
-    m1 = MASS_RATIO * M_total
-    m2 = (1.0 - MASS_RATIO) * M_total
-elif CASE == "fixed_head":
-    m1 = M1_FIXED
-    m2 = M_total - M1_FIXED
-else:
-    raise ValueError(f"unknown CASE {CASE!r}")
-
-if m2 <= 0.0:
-    raise ValueError(f"frame mass m2 = {m2:g} kg must be positive")
-
-K_contact = 1.0e3   # contact spring stiffness K [N/m]
-k1 = 1.0e3          # head-frame suspension stiffness [N/m]   <-- SET ME
-c1 = 0.0            # head-frame suspension damping [N s/m] (0 = undamped validation)
-k2 = 0.0            # frame-to-base stiffness [N/m] (0 = frame not grounded)
-c2 = 0.0            # frame-to-base damping [N s/m]
+# --- contact oscillator ---
+M_mass = 75        # mass [kg]
+K_contact = 1.0e3   # contact spring stiffness [N/m]
 
 # --- periodic section ---
 spacing = 10.0
@@ -112,7 +78,7 @@ n_cells = 800
 element_length_requested = 0.05
 
 # --- vertical supports at periodic positions ---
-Kv = 4.0e3                                    # discrete support stiffness [N/m]
+Kv = 4.0e3                                    # discrete support stiffness [N/m], = ek
 phi = 0                                        # support loss factor (0 = undamped validation)
 omega_ref = 2.0 * np.pi * V / spacing          # support-passing frequency [rad/s]
 
@@ -120,7 +86,7 @@ omega_ref = 2.0 * np.pi * V / spacing          # support-passing frequency [rad/
 t_max = 30
 
 # --- cache / output control ---
-FORCE_RERUN = False
+FORCE_RERUN = False                 # True => recompute even if a cache hit exists
 CACHE_DIR = Path("cache")
 FIG_DIR = Path("figures")
 
@@ -134,32 +100,16 @@ element_length, n_elements_per_cell, n_nodes, catenary_length = mesh_parameters(
 # Helpers
 # ======================================================================
 
-def oscillator_frequencies() -> np.ndarray:
-    """Natural frequencies [Hz] of the 2-DOF oscillator with the contact
-    spring engaged (string held rigid): eig of M^-1 K on
-
-        K_osc = [[K + k1, -k1     ],     M_osc = diag(m1, m2)
-                 [-k1,     k1 + k2]]
-
-    These are the frequencies that can tune into parametric resonance
-    with the support-passing frequency V / L.
-    """
-    k_osc = np.array([[K_contact + k1, -k1], [-k1, k1 + k2]])
-    m_osc = np.diag([m1, m2])
-    eigvals = np.linalg.eigvals(np.linalg.solve(m_osc, k_osc))
-    eigvals = np.sort(np.real(eigvals))
-    eigvals = np.clip(eigvals, 0.0, None)   # guard tiny negative round-off
-    return np.sqrt(eigvals) / (2.0 * np.pi)
-
-
 def collect_params() -> dict:
-    """Everything that affects the result. Any change => new hash => rerun."""
+    """Everything that affects the result. Any change => new hash => rerun.
+
+    Both Vc and V are stored: Vc is the control parameter, V is what the
+    solver consumes. The hash is deterministic either way.
+    """
     return {
         "Vc": Vc, "V": V, "tension": tension, "damp_string": damp_string, "m": m,
-        "case": CASE, "M_total": M_total, "m1": m1, "m2": m2,
-        "K_contact": K_contact, "k1": k1, "c1": c1, "k2": k2, "c2": c2,
-        "spacing": spacing, "n_cells": n_cells,
-        "element_length_requested": element_length_requested,
+        "M_mass": M_mass, "K_contact": K_contact, "spacing": spacing,
+        "n_cells": n_cells, "element_length_requested": element_length_requested,
         "Kv": Kv, "phi": phi, "dt": dt, "t_max": t_max,
         "gamma": NEWMARK_GAMMA, "beta": NEWMARK_BETA,
     }
@@ -173,14 +123,13 @@ def param_hash(params: dict) -> str:
 def readable_tag() -> str:
     """Human-browsable filename stem encoding the key physics/numerics."""
     return (
-        f"{CASE}_Vc{Vc:.3f}_Mt{M_total:g}_m1{m1:g}_m2{m2:g}"
-        f"_K{K_contact:.0e}_k1{k1:.0e}_k2{k2:.0e}_phi{phi:g}"
-        f"_g{NEWMARK_GAMMA:g}_dt{dt:g}_nc{n_cells}"
+        f"Vc{Vc:.3f}_M{M_mass:g}_K{K_contact:.0e}_phi{phi:g}"
+        f"_g{NEWMARK_GAMMA:g}_b{NEWMARK_BETA:.4f}_dt{dt:g}_nc{n_cells}"
     )
 
 
 def run_or_load(params: dict):
-    """Return (t, u_point, z_head, z_frame, contact_force), from cache if available."""
+    """Return (t, u_point, z_mass, contact_force), from cache if available."""
     CACHE_DIR.mkdir(exist_ok=True)
     h = param_hash(params)
     cache_file = CACHE_DIR / f"run_{h}.npz"
@@ -188,7 +137,7 @@ def run_or_load(params: dict):
     if cache_file.exists() and not FORCE_RERUN:
         print(f"Cache HIT ({h}) -> loading (set FORCE_RERUN=True to recompute).")
         d = np.load(cache_file)
-        return d["t"], d["u_point"], d["z_head"], d["z_frame"], d["contact_force"]
+        return d["t"], d["u_point"], d["z_mass"], d["contact_force"]
 
     reason = "FORCE_RERUN" if cache_file.exists() else "no cache"
     print(f"Cache MISS ({h}, {reason}) -> running simulation.")
@@ -199,12 +148,7 @@ def run_or_load(params: dict):
         kv=Kv,
         phi=phi,
         omega_ref=omega_ref,
-        head_mass=m1,
-        frame_mass=m2,
-        susp_stiffness=k1,
-        susp_damping=c1,
-        base_stiffness=k2,
-        base_damping=c2,
+        contact_mass=M_mass,
         contact_stiffness=K_contact,
         element_length=element_length,
         n_elements_per_cell=n_elements_per_cell,
@@ -217,13 +161,13 @@ def run_or_load(params: dict):
     np.savez(
         cache_file,
         t=output.t, u_point=output.u_point,
-        z_head=output.z_head, z_frame=output.z_frame,
-        contact_force=output.contact_force,
+        z_mass=output.z_mass, contact_force=output.contact_force,
         **params,
     )
     print(f"  cached -> {cache_file}")
+    # keep the model handy for the structural sanity prints this one time
     run_or_load._last_model = output.model
-    return output.t, output.u_point, output.z_head, output.z_frame, output.contact_force
+    return output.t, output.u_point, output.z_mass, output.contact_force
 
 
 def growth_rate(t, contact_force, settle_periods=3.0):
@@ -244,6 +188,7 @@ def growth_rate(t, contact_force, settle_periods=3.0):
         "ratio_endpoints": env[-1] / max(env[0], 1e-300),
         "slope": None,
     }
+    # beat-robust ratio: mean of last 10% vs first 10% (averages over beats)
     n10 = max(1, len(env) // 10)
     out["ratio_robust"] = env[-n10:].mean() / max(env[:n10].mean(), 1e-300)
 
@@ -283,14 +228,14 @@ def main() -> None:
         f"{n_elements_per_cell} elements/cell, {n_nodes} nodes"
     )
 
-    # --- physics-derived diagnostics ---
-    f_osc = oscillator_frequencies()          # both oscillator modes [Hz]
-    f_max = f_osc[-1]
-    T_min = 1.0 / f_max if f_max > 0 else np.inf
+    # --- physics-derived diagnostics (c, V already defined at module level) ---
+    omega_c = np.sqrt(K_contact / M_mass)
+    f_c = omega_c / (2 * np.pi)
+    T_c = 1.0 / f_c
     f_pass = V / spacing
 
     # --- numerical-resolution diagnostics ---
-    points_per_fast_period = T_min / dt
+    points_per_contact_period = T_c / dt
     load_advance_per_step = V * dt
     elements_per_step = load_advance_per_step / element_length
 
@@ -301,18 +246,15 @@ def main() -> None:
     loops_in_run = V * t_max / catenary_length
 
     print("\n--- Physics ---")
-    print(f"  Case                          = {CASE}  (M_total = {M_total:g} kg)")
-    print(f"  Head / frame mass             = m1 = {m1:g} kg, m2 = {m2:g} kg")
     print(f"  Wave speed c                  = {c:.2f} m/s")
     print(f"  V/c                           = {Vc:.3f}  (V = {V:.2f} m/s, "
           f"{'sub-critical' if Vc < 1 else 'super-critical'})")
-    print(f"  Oscillator modes (K engaged)  = {f_osc[0]:.2f} Hz, {f_osc[1]:.2f} Hz")
+    print(f"  Contact mode                  = {f_c:.1f} Hz  (period {T_c*1e3:.2f} ms)")
     print(f"  Support-passing frequency     = {f_pass:.2f} Hz")
-    print(f"  f_i / f_pass                  = {f_osc[0]/f_pass:.3f}, {f_osc[1]/f_pass:.3f}"
-          f"  (=n/2 => parametric tongues)")
+    print(f"  f_c / f_pass                  = {f_c / f_pass:.3f}  (=2 => principal parametric)")
 
     print("\n--- Numerical resolution ---")
-    print(f"  Points per FASTEST osc period = {points_per_fast_period:.1f}  (want >= 20)")
+    print(f"  Points per contact period     = {points_per_contact_period:.1f}  (want >= 20)")
     print(f"  Load advance per step         = {load_advance_per_step*1e3:.3f} mm")
     print(f"  Elements per step             = {elements_per_step:.3f}  (want < 1)")
     print(f"  Newmark gamma / beta          = {NEWMARK_GAMMA:g} / {NEWMARK_BETA:.4f}")
@@ -330,18 +272,15 @@ def main() -> None:
               f"(n_cells >= {int(np.ceil((c + V) * t_max / (wake_safety_factor * spacing)))}).")
 
     # --- run (or load from cache) ---
-    t, u_point, z_head, z_frame, contact_force = run_or_load(params)
+    t, u_point, z_mass, contact_force = run_or_load(params)
 
     # structural sanity only available on a fresh run (model isn't cached)
     model = getattr(run_or_load, "_last_model", None)
     if model is not None:
         print(f"\nSprings: {model.spring_nodes.size}")
-        print(f"n_dof = {model.n_dof}, expected {n_nodes + 2}")
-        print(f"contact_dof = {model.contact_dof}, frame_dof = {model.frame_dof}")
-        print(f"m1 on head DOF:  {model.mass[model.contact_dof, model.contact_dof]:.4g}")
-        print(f"m2 on frame DOF: {model.mass[model.frame_dof, model.frame_dof]:.4g}")
-        print(f"k1 coupling K[z1,z2]: {model.stiffness[model.contact_dof, model.frame_dof]:.4g}"
-              f" (expected {-k1:g})")
+        print(f"n_dof = {model.n_dof}, expected {n_nodes + 1}")
+        print(f"mass_dof = {model.mass_dof}, expected {n_nodes}")
+        print(f"M on mass DOF: {model.mass[model.mass_dof, model.mass_dof]:.4g}")
 
     # --- growth / decay ---
     g = growth_rate(t, contact_force)
@@ -359,9 +298,8 @@ def main() -> None:
 
     # --- figure ---
     param_text = (
-        f"{CASE}: M_t={M_total:g} kg (m1={m1:g}, m2={m2:g})   V/c={Vc:.3f} (V={V:.2f} m/s)\n"
-        f"K={K_contact:.0e}  k1={k1:.0e}  c1={c1:g}  k2={k2:.0e}  c2={c2:g}   phi={phi:g}   "
-        f"gamma={NEWMARK_GAMMA:g}  beta={NEWMARK_BETA:.4f}   dt={dt:g} s\n"
+        f"V/c={Vc:.3f} (V={V:.2f} m/s)   M={M_mass:g} kg   K={K_contact:.0e} N/m   "
+        f"phi={phi:g}   gamma={NEWMARK_GAMMA:g}  beta={NEWMARK_BETA:.4f}   dt={dt:g} s\n"
         f"H={tension:g}  rhoA={m:g}  ks={Kv:g}  L={spacing:g}  n_cells={n_cells}  "
         f"t_max={t_max:g}   Re(lambda)="
         + (f"{g['slope']:+.4f} 1/s  [{g['verdict']}]" if g['slope'] is not None else "n/a")
@@ -370,8 +308,7 @@ def main() -> None:
     fig, axes = plt.subplots(3, 1, sharex=True, figsize=(9, 9))
 
     axes[0].plot(t, u_point, label="w_c(t) string at contact")
-    axes[0].plot(t, z_head, label="z1(t) head")
-    axes[0].plot(t, z_frame, label="z2(t) frame")
+    axes[0].plot(t, z_mass, label="z(t) mass")
     axes[0].set_ylabel("Displacement [m]")
     axes[0].legend()
     axes[0].grid(True)
@@ -380,6 +317,7 @@ def main() -> None:
     axes[1].set_ylabel("Contact force [N]")
     axes[1].grid(True)
 
+    # dense trace rasterised (keeps PDF small); peaks + fit stay vector
     axes[2].semilogy(t, g["env"], lw=0.8, rasterized=True)
     if g["slope"] is not None:
         axes[2].semilogy(g["t_pk"], g["env_pk"], "r.", ms=5, label="envelope peaks")
@@ -390,15 +328,16 @@ def main() -> None:
     axes[2].set_ylabel("|F_tr| [N]  (log)")
     axes[2].grid(True, which="both")
 
-    fig.suptitle(param_text, fontsize=8, family="monospace")
-    fig.subplots_adjust(top=0.88)
+    fig.suptitle(param_text, fontsize=9, family="monospace")
+    fig.subplots_adjust(top=0.90)
 
+    # --- save (PNG for browsing, PDF vector for the thesis) ---
     FIG_DIR.mkdir(exist_ok=True)
     stem = datetime.now().strftime("%Y%m%d_%H%M%S_") + readable_tag()
     png_path = FIG_DIR / f"{stem}.png"
     pdf_path = FIG_DIR / f"{stem}.pdf"
-    fig.savefig(png_path, dpi=300, bbox_inches="tight")
-    fig.savefig(pdf_path, dpi=300, bbox_inches="tight")
+    fig.savefig(png_path, dpi=300, bbox_inches="tight")   # 300 dpi raster
+    fig.savefig(pdf_path, dpi=300, bbox_inches="tight")   # vector + rasterised trace
     print(f"\nsaved: {png_path}")
     print(f"saved: {pdf_path}")
 

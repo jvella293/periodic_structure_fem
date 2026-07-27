@@ -14,9 +14,7 @@ from periodic_string.elements import (
 
 @dataclass(frozen=True)
 class AssembledModel:
-    """Global finite-element model of a periodic string on springs with a
-    two-DOF moving oscillator (head mass z1 on the contact spring, frame
-    mass z2 below it).
+    """Global finite-element model of a periodic string on springs.
 
     Attributes
     ----------
@@ -27,25 +25,21 @@ class AssembledModel:
     catenary_length : float
         Total length of one periodic catenary span.
     n_dof : int
-        Number of global degrees of freedom (``n_nodes + 2``).
-    n_string_dofs : int
-        Number of string transverse DOFs (``n_nodes``).
-    contact_dof : int
-        Global index of the head-mass DOF ``z1(t)`` (in contact with the
-        string through the contact spring ``K``).
-    frame_dof : int
-        Global index of the frame-mass DOF ``z2(t)``.
-    contact_stiffness : float
-        Stiffness of the contact spring ``K`` between the head mass and
-        the string.
+        Number of global degrees of freedom (``n_nodes + 1``).
     mass : scipy.sparse.csr_matrix
         Global mass matrix.
+    n_string_dofs : int
+        Number of string transverse DOFs (``n_nodes``).
+    mass_dof : int
+        Global index of the moving-mass vertical DOF ``z(t)``.
+    contact_stiffness : float
+        Stiffness of the contact spring ``K`` between the moving mass
+        and the string.
     stiffness : scipy.sparse.csr_matrix
         Global stiffness matrix (static part — excludes the time-varying
-        contact contribution, but INCLUDES the constant oscillator
-        suspension block k1/k2).
+        contact contribution).
     damping : scipy.sparse.csr_matrix
-        Global damping matrix (includes the constant c1/c2 block).
+        Global damping matrix.
     free_dofs : numpy.ndarray
         Indices of unconstrained degrees of freedom.
     """
@@ -55,8 +49,7 @@ class AssembledModel:
     catenary_length: float
     n_dof: int
     n_string_dofs: int
-    contact_dof: int
-    frame_dof: int
+    mass_dof: int
     contact_stiffness: float
     mass: sparse.csr_matrix
     stiffness: sparse.csr_matrix
@@ -160,12 +153,7 @@ def assemble_model(
     mass_per_length: float,
     kv: float,
     damp_rp: float,
-    head_mass: float,
-    frame_mass: float,
-    susp_stiffness: float,
-    susp_damping: float,
-    base_stiffness: float,
-    base_damping: float,
+    contact_mass: float,
     contact_stiffness: float,
     element_length: float,
     n_elements_per_cell: int,
@@ -174,28 +162,20 @@ def assemble_model(
     show_progress: bool = True,
 ) -> AssembledModel:
     """Assemble global mass, stiffness, and damping matrices for the string
-    with a two-DOF moving oscillator (head z1 + frame z2).
+    with an extra DOF for the moving contact mass.
 
     String elements form a closed periodic loop. Vertical springs to
-    ground are placed at the first node of each cell. Two extra DOFs
-    represent the head mass ``z1(t)`` (contacting the string through the
-    contact spring, applied later in the time loop) and the frame mass
-    ``z2(t)``. The suspension between them (``k1``, ``c1``) and the
-    frame-to-base connection (``k2``, ``c2``) are constant and assembled
-    here:
-
-        K_osc = [[ k1, -k1     ],        C_osc = [[ c1, -c1     ],
-                 [-k1,  k1 + k2]]                 [-c1,  c1 + c2]]
-
-    with row/column ordering ``[z1, z2]``. Only the contact spring
-    ``K * d(t) d(t).T`` is time-varying.
+    ground are placed at the first node of each cell. One extra DOF
+    represents the vertical position ``z(t)`` of the moving mass; in
+    this step the mass DOF is uncoupled from the string (the contact
+    spring is applied later in the time loop).
 
     Parameters
     ----------
     tension : float
         Axial tension carried by the string.
     damp_string : float
-        Rayleigh-type damping factor on the string stiffness.
+        Rayleigh-type damping factor on the string stiffness. 
         Set to 0 for an undamped string as in the model equation.
     mass_per_length : float
         Mass per unit length of the string.
@@ -205,24 +185,11 @@ def assemble_model(
         Equivalent viscous time constant ``phi / omega_ref`` representing
         the loss factor of the complex support stiffness
         ``kv * (1 + i * phi)`` in the time domain.
-    head_mass : float
-        Head mass ``m1`` [kg] — the DOF connected to the string through
-        the contact spring ``K``.
-    frame_mass : float
-        Frame mass ``m2`` [kg] below the head.
-    susp_stiffness : float
-        Suspension stiffness ``k1`` [N/m] between head and frame.
-    susp_damping : float
-        Suspension viscous damping ``c1`` [N s/m] between head and frame.
-        Set to 0 for the undamped validation case.
-    base_stiffness : float
-        Stiffness ``k2`` [N/m] between the frame and the (rigid) base.
-        Set to 0 if the frame is not connected to a base.
-    base_damping : float
-        Viscous damping ``c2`` [N s/m] between the frame and the base.
+    contact_mass : float
+        Mass ``M`` of the moving oscillator [kg].
     contact_stiffness : float
-        Contact spring stiffness ``K`` [N/m] between the head mass and
-        the string. Stored on the returned model for the time loop.
+        Contact spring stiffness ``K`` [N/m] between the moving mass and the string. 
+        Stored on the returned model for the time loop.
     element_length : float
         Length of each string element.
     n_elements_per_cell : int
@@ -240,9 +207,8 @@ def assemble_model(
         Assembled sparse global model ready for time integration.
     """
     n_string_dofs = n_nodes
-    n_dof = n_string_dofs + 2  # two extra DOFs: head z1 and frame z2
-    contact_dof = n_string_dofs
-    frame_dof = n_string_dofs + 1
+    n_dof = n_string_dofs + 1  # extra DOF for the moving mass
+    mass_dof = n_string_dofs
 
     node_x = np.arange(n_nodes, dtype=float) * element_length
     spring_nodes = np.arange(n_nodes, step=n_elements_per_cell, dtype=int)
@@ -271,27 +237,9 @@ def assemble_model(
         k_triplets.append((kv, spring_node, spring_node))
         c_triplets.append((ck, spring_node, spring_node))
 
-    # Two-DOF oscillator: masses on the diagonal, constant suspension
-    # blocks in K and C. The (time-varying) contact spring K is NOT
-    # assembled here — it is applied per step as a rank-1 update.
-    m_triplets.append((head_mass, contact_dof, contact_dof))
-    m_triplets.append((frame_mass, frame_dof, frame_dof))
-
-    osc_dofs = [contact_dof, frame_dof]
-    k_osc = np.array(
-        [
-            [susp_stiffness, -susp_stiffness],
-            [-susp_stiffness, susp_stiffness + base_stiffness],
-        ]
-    )
-    c_osc = np.array(
-        [
-            [susp_damping, -susp_damping],
-            [-susp_damping, susp_damping + base_damping],
-        ]
-    )
-    _add_matrix(k_triplets, k_osc, osc_dofs)
-    _add_matrix(c_triplets, c_osc, osc_dofs)
+    # Moving mass: just M on the diagonal of the mass matrix.
+    # No stiffness or damping coupling yet — contact is applied in the time loop.
+    m_triplets.append((contact_mass, mass_dof, mass_dof))
 
     stiffness = _triplets_to_csr(k_triplets, n_dof)
     damping = _triplets_to_csr(c_triplets, n_dof)
@@ -306,8 +254,7 @@ def assemble_model(
         catenary_length=catenary_length,
         n_dof=n_dof,
         n_string_dofs=n_string_dofs,
-        contact_dof=contact_dof,
-        frame_dof=frame_dof,
+        mass_dof=mass_dof,
         contact_stiffness=contact_stiffness,
         mass=mass,
         stiffness=stiffness,

@@ -24,12 +24,10 @@ class SolverOutput:
         Full time vector used during integration.
     u_point : numpy.ndarray
         Vertical displacement of the string at the contact point ``w_c(t) = N(t).T @ w``
-    z_head : numpy.ndarray
-        Vertical position of the head mass, ``z1(t)`` (on the contact spring).
-    z_frame : numpy.ndarray
-        Vertical position of the frame mass, ``z2(t)``.
+    z_mass : numpy.ndarray
+        Vertical position of the moving mass, ``z(t)``.
     contact_force : numpy.ndarray
-        Contact spring force ``F(t) = K * (z1(t) - w_c(t))``.
+        Contact spring force ``F(t) = K * (z(t) - w_c(t))``.
     model : AssembledModel
         Assembled finite-element model used in the simulation.
     """
@@ -37,8 +35,7 @@ class SolverOutput:
     t: np.ndarray
     t_all: np.ndarray
     u_point: np.ndarray
-    z_head: np.ndarray
-    z_frame: np.ndarray
+    z_mass: np.ndarray
     contact_force: np.ndarray
     model: AssembledModel
 
@@ -50,20 +47,18 @@ def _static_initial_state(
     """Compute the static-equilibrium initial state at the initial load position.
 
     Solves ``(K_static + K * d_init d_init.T) u_0 = f`` with gravity on the
-    oscillator DOFs and the contact spring placed at ``load_x_init``. Returns
+    moving-mass DOF and the contact spring placed at ``load_x_init``. Returns
     a state with ``u_0`` as the displacement and zero velocity/acceleration.
 
     This removes the gravity-switch-on transient that would otherwise excite
-    the high-frequency contact mode at ``sqrt(K / m1)``.
-
-    Note: not used in the perturbation-stability runs (gravity off).
+    the high-frequency contact mode at ``sqrt(K / M)``.
 
     Parameters
     ----------
     model : AssembledModel
         Assembled finite-element model.
     external_force : numpy.ndarray
-        Constant nodal force vector (gravity on the oscillator DOFs).
+        Constant nodal force vector (gravity on the mass DOF).
     load_x_init : float
         Load position at ``t = 0``.
 
@@ -79,7 +74,7 @@ def _static_initial_state(
         load_x_init,
         model.catenary_length,
         model.n_dof,
-        model.contact_dof,
+        model.mass_dof,
     )
     d_init_free = d_init[free]
     d_init_sp = sparse.csr_matrix(d_init_free.reshape(-1, 1))
@@ -104,12 +99,7 @@ def solve_moving_load(
     kv: float,
     phi: float,
     omega_ref: float,
-    head_mass: float,
-    frame_mass: float,
-    susp_stiffness: float,
-    susp_damping: float,
-    base_stiffness: float,
-    base_damping: float,
+    contact_mass: float,
     contact_stiffness: float,
     element_length: float,
     n_elements_per_cell: int,
@@ -121,19 +111,21 @@ def solve_moving_load(
     dt_out: float | None = None,
     show_progress: bool = True,
 ) -> SolverOutput:
-    """Simulate a moving 2-DOF oscillator on a periodic string.
+    """Simulate a moving point load on a periodic string with an
+    auxiliary moving-mass DOF (uncoupled in this step).
 
-    Assembles the string + head + frame model, integrates with Newmark's
-    method including the moving contact spring as a rank-1 stiffness
-    update at each step, and records the string displacement at contact,
-    both oscillator positions, and the contact force.
+    Assembles the string + moving-mass model, applies gravity on the
+    mass DOF, integrates with Newmark's method including the moving
+    contact spring as a rank-1 stiffness update at each step, and
+    records the string displacement at contact, the mass position, and
+    the contact force.
 
     Parameters
     ----------
     tension : float
         Tensile force in the string.
     damp_string : float
-        Rayleigh-type damping factor on the string stiffness.
+        Rayleigh-type damping factor on the string stiffness. 
         Set to 0 for an undamped string as in the model equation.
     mass_per_length : float
         Mass per unit length of the string.
@@ -145,18 +137,8 @@ def solve_moving_load(
         Reference circular frequency [rad/s] at which the hysteretic
         support damping is converted to equivalent viscous damping,
         ``damp_rp = phi / omega_ref``.
-    head_mass : float
-        Head mass ``m1`` [kg] (on the contact spring).
-    frame_mass : float
-        Frame mass ``m2`` [kg].
-    susp_stiffness : float
-        Suspension stiffness ``k1`` [N/m] between head and frame.
-    susp_damping : float
-        Suspension viscous damping ``c1`` [N s/m].
-    base_stiffness : float
-        Frame-to-base stiffness ``k2`` [N/m] (0 = frame not grounded).
-    base_damping : float
-        Frame-to-base viscous damping ``c2`` [N s/m].
+    contact_mass : float
+        Mass ``M`` of the moving oscillator [kg].
     contact_stiffness : float
         Contact spring stiffness ``K`` [N/m].
     element_length : float
@@ -170,7 +152,7 @@ def solve_moving_load(
     dt : float
         Integration time step.
     velocity : float
-        Load travel speed along the catenary.
+        Load travel speed along the catenary. 
         If zero, the load is placed at mid-span.
     t_max : float
         End time of the simulation.
@@ -195,12 +177,7 @@ def solve_moving_load(
         mass_per_length=mass_per_length,
         kv=kv,
         damp_rp=damp_rp,
-        head_mass=head_mass,
-        frame_mass=frame_mass,
-        susp_stiffness=susp_stiffness,
-        susp_damping=susp_damping,
-        base_stiffness=base_stiffness,
-        base_damping=base_damping,
+        contact_mass=contact_mass,
         contact_stiffness=contact_stiffness,
         element_length=element_length,
         n_elements_per_cell=n_elements_per_cell,
@@ -216,27 +193,25 @@ def solve_moving_load(
         dt=dt,
     )
 
-    # Perturbation-stability run: no gravity (it cancels in the
-    # perturbation equations), homogeneous system + seeded perturbation.
+    g = 9.81  # gravitational acceleration [m/s^2]
+
+    # Constant external force: gravity on the moving-mass DOF.
     external_force = np.zeros(model.n_dof)
 
     x_min = model.node_x.min()
     x_max = catenary_length
 
+    # Static initial condition at t = 0: avoids the gravity-switch-on transient.
     load_x_init = 0.0 if velocity != 0.0 else 0.5 * catenary_length
     load_x_init = wrap_load_position(load_x_init, x_min, x_max)
     state = integrator.initial_state(model.n_dof)
-    # Seed BOTH oscillator DOFs so that a mode with a node at z1 is
-    # still excited (a z1-only seed can under-excite the second mode).
-    state.velocity[model.contact_dof] = 1.0e-6
-    state.velocity[model.frame_dof] = 1.0e-6
+    state.velocity[model.mass_dof] = 1.0e-6   # small perturbation seed
 
     t_all = np.arange(0.0, t_max + 0.5 * dt, dt)
     output_stride = max(1, int(round(dt_out / dt)))
     t_out: list[float] = []
     u_point: list[float] = []
-    z_head: list[float] = []
-    z_frame: list[float] = []
+    z_mass: list[float] = []
     contact_force: list[float] = []
 
     for step_index, time in enumerate(
@@ -248,7 +223,7 @@ def solve_moving_load(
             load_x = 0.5 * catenary_length
 
         load_x = wrap_load_position(load_x, x_min, x_max)
-        d = contact_direction(model.node_x, load_x, x_max, model.n_dof, model.contact_dof)
+        d = contact_direction(model.node_x, load_x, x_max, model.n_dof, model.mass_dof)
 
         state = integrator.step(
             state=state,
@@ -264,25 +239,22 @@ def solve_moving_load(
             break
 
         if step_index % output_stride == 0:
-            # w_c(t) = N(t).T @ w — the string DOF entries of d are N(t)
+            # w_c(t) = N(t).T @ w  — the string DOF entries of d are N(t)
             shape = d.copy()
-            shape[model.contact_dof] = 0.0
+            shape[model.mass_dof] = 0.0
             w_c = float(shape @ state.displacement)
-            z1 = float(state.displacement[model.contact_dof])
-            z2 = float(state.displacement[model.frame_dof])
+            z = float(state.displacement[model.mass_dof])
 
             t_out.append(time)
             u_point.append(w_c)
-            z_head.append(z1)
-            z_frame.append(z2)
-            contact_force.append(model.contact_stiffness * (z1 - w_c))
+            z_mass.append(z)
+            contact_force.append(model.contact_stiffness * (z - w_c))
 
     return SolverOutput(
         t=np.asarray(t_out),
         t_all=t_all,
         u_point=np.asarray(u_point),
-        z_head=np.asarray(z_head),
-        z_frame=np.asarray(z_frame),
+        z_mass=np.asarray(z_mass),
         contact_force=np.asarray(contact_force),
         model=model,
     )

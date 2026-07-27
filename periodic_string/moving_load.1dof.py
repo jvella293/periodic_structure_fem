@@ -100,17 +100,15 @@ def contact_direction(
     x: float,
     catenary_length: float,
     n_dof: int,
-    contact_dof: int,
+    mass_dof: int,
 ) -> np.ndarray:
     """Build the rank-1 direction vector for the moving contact coupling.
 
-    Returns ``d(t) = [N(t); -1; 0]`` of length ``n_dof``, where ``N(t)``
-    is the linear shape function vector at the load position ``x``, the
-    ``-1`` sits on the head-mass DOF ``z1``, and the frame DOF ``z2``
-    entry is zero (the frame does not touch the string). The contact
+    Returns ``d(t) = [N(t); -1]`` of length ``n_dof``, where ``N(t)`` is
+    the linear shape function vector at the load position ``x`` and the
+    final entry corresponds to the moving-mass DOF. The contact
     stiffness contribution to the global stiffness matrix is
-    ``K * d(t) d(t).T`` — still rank-1 in the 2-DOF oscillator model, so
-    the Sherman-Morrison step in the integrator is unchanged.
+    ``K * d(t) d(t).T``.
 
     Parameters
     ----------
@@ -121,9 +119,9 @@ def contact_direction(
     catenary_length : float
         Total length of one periodic catenary span.
     n_dof : int
-        Total number of global degrees of freedom (string + 2 oscillator).
-    contact_dof : int
-        Global index of the head-mass DOF ``z1``.
+        Total number of global degrees of freedom (string + mass).
+    mass_dof : int
+        Global index of the moving-mass DOF.
 
     Returns
     -------
@@ -131,5 +129,5 @@ def contact_direction(
         Direction vector ``d(t)`` of length ``n_dof``.
     """
     d = load_shape_vector(node_x, x, catenary_length, n_dof)
-    d[contact_dof] = -1.0
+    d[mass_dof] = -1.0
     return d
