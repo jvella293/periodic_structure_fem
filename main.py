@@ -1,27 +1,25 @@
 # Created by RvL
-"""Moving 2-DOF oscillator (head + frame) on a periodic taut string.
+"""Moving 2-DOF oscillator on a periodic taut string — time-domain validation.
 
 Perturbation-stability run: gravity off, small seeded perturbation, the
 growth/decay rate Re(lambda) of the contact-force envelope is the validation
 quantity (compare against the Hill/Floquet dominant exponent at phi = 0).
 
-Oscillator layout
------------------
-    string ~~~ K ~~~ [m1, z1]  (head — the "current mass" of the 1DOF model)
-                        |
-                     k1, c1
-                        |
-                     [m2, z2]  (frame)
-                        |
-                     k2, c2    (to rigid base; set k2 = c2 = 0 if absent)
+Oscillator layout (matches the Floquet code conventions)
+--------------------------------------------------------
+    string ~~~ k01 ~~~ [m1, z1]   k01: contact spring (string -- m1)
+                          |
+                        k12       k12: secondary spring (m1 -- m2)
+                          |
+                       [m2, z2]   (ungrounded)
 
-Two study cases, selected with CASE below; M_total stays the control
-parameter of the (M, V/c) stability plane in both:
+Model selection (same names/semantics as the Floquet code; m1 is the
+stability-plane coordinate in both cases):
 
-  CASE = "ratio"      : m1 = MASS_RATIO * M_total, m2 = (1 - MASS_RATIO) * M_total
-                        (both masses scale together, fixed ratio)
-  CASE = "fixed_head" : m1 = M1_FIXED (constant), m2 = M_total - M1_FIXED
-                        (only the frame mass varies with M_total)
+  model = "2dof"          : m2 = mu * m1        (fixed mass ratio mu = m2/m1)
+  model = "2dof_fixedM2"  : m2 = m2_fixed       (constant secondary mass)
+
+(The Floquet "sdof" case corresponds to the old 1-DOF time-domain code.)
 
 Input convention
 ----------------
@@ -73,7 +71,7 @@ except ImportError:
 dt = 1e-4
 
 # --- string ---
-tension = 2.0e4
+tension = 1.0e4
 damp_string = 0.0   # no string damping in the PDE
 m = 1.1             # mass per unit length of the string [kg/m]
 
@@ -81,30 +79,25 @@ m = 1.1             # mass per unit length of the string [kg/m]
 c = np.sqrt(tension / m)     # string wave speed [m/s]
 Vc = 0.2
 V = Vc * c
+V = 22.247460415730487
+Vc = V/c
 
-# --- contact oscillator: 2 DOF (head z1 on contact spring, frame z2) ---
-CASE = "ratio"        # "ratio" or "fixed_head"
-M_total = 75          # total oscillator mass [kg] — stability-plane coordinate
-MASS_RATIO = 0.25     # m1 / M_total    (used when CASE == "ratio")
-M1_FIXED = 18.75      # head mass [kg]  (used when CASE == "fixed_head")
+# --- contact oscillator: 2 DOF (names match the Floquet code) ---
+model = "2dof"      # "2dof" (m2 = mu*m1) | "2dof_fixedM2" (m2 fixed in kg)
+m1 = 86.69           # contact mass [kg] — stability-plane coordinate
+mu = 0.5            # mass ratio m2/m1        (used only when model = "2dof")
+m2_fixed = 50.0     # secondary mass [kg]     (used only when model = "2dof_fixedM2")
 
-if CASE == "ratio":
-    m1 = MASS_RATIO * M_total
-    m2 = (1.0 - MASS_RATIO) * M_total
-elif CASE == "fixed_head":
-    m1 = M1_FIXED
-    m2 = M_total - M1_FIXED
+if model == "2dof":
+    m2 = mu * m1
+elif model == "2dof_fixedM2":
+    m2 = m2_fixed
 else:
-    raise ValueError(f"unknown CASE {CASE!r}")
+    raise ValueError(f"unknown model {model!r}")
 
-if m2 <= 0.0:
-    raise ValueError(f"frame mass m2 = {m2:g} kg must be positive")
-
-K_contact = 1.0e3   # contact spring stiffness K [N/m]
-k1 = 1.0e3          # head-frame suspension stiffness [N/m]   <-- SET ME
-c1 = 0.0            # head-frame suspension damping [N s/m] (0 = undamped validation)
-k2 = 0.0            # frame-to-base stiffness [N/m] (0 = frame not grounded)
-c2 = 0.0            # frame-to-base damping [N s/m]
+k01 = 1.0e4         # contact spring (string -- m1) [N/m]
+k12 = 1.0e3         # secondary spring (m1 -- m2) [N/m]
+c12 = 0.0           # secondary viscous damping [N s/m] (0 = undamped validation)
 
 # --- periodic section ---
 spacing = 10.0
@@ -117,7 +110,7 @@ phi = 0                                        # support loss factor (0 = undamp
 omega_ref = 2.0 * np.pi * V / spacing          # support-passing frequency [rad/s]
 
 # --- run length ---
-t_max = 30
+t_max = 15
 
 # --- cache / output control ---
 FORCE_RERUN = False
@@ -138,13 +131,13 @@ def oscillator_frequencies() -> np.ndarray:
     """Natural frequencies [Hz] of the 2-DOF oscillator with the contact
     spring engaged (string held rigid): eig of M^-1 K on
 
-        K_osc = [[K + k1, -k1     ],     M_osc = diag(m1, m2)
-                 [-k1,     k1 + k2]]
+        K_osc = [[k01 + k12, -k12],     M_osc = diag(m1, m2)
+                 [-k12,       k12]]
 
     These are the frequencies that can tune into parametric resonance
     with the support-passing frequency V / L.
     """
-    k_osc = np.array([[K_contact + k1, -k1], [-k1, k1 + k2]])
+    k_osc = np.array([[k01 + k12, -k12], [-k12, k12]])
     m_osc = np.diag([m1, m2])
     eigvals = np.linalg.eigvals(np.linalg.solve(m_osc, k_osc))
     eigvals = np.sort(np.real(eigvals))
@@ -153,11 +146,15 @@ def oscillator_frequencies() -> np.ndarray:
 
 
 def collect_params() -> dict:
-    """Everything that affects the result. Any change => new hash => rerun."""
+    """Everything that affects the result. Any change => new hash => rerun.
+
+    m1 is the control parameter; m2 is stored too so the hash is unique
+    regardless of which model derived it.
+    """
     return {
         "Vc": Vc, "V": V, "tension": tension, "damp_string": damp_string, "m": m,
-        "case": CASE, "M_total": M_total, "m1": m1, "m2": m2,
-        "K_contact": K_contact, "k1": k1, "c1": c1, "k2": k2, "c2": c2,
+        "model": model, "m1": m1, "m2": m2,
+        "k01": k01, "k12": k12, "c12": c12,
         "spacing": spacing, "n_cells": n_cells,
         "element_length_requested": element_length_requested,
         "Kv": Kv, "phi": phi, "dt": dt, "t_max": t_max,
@@ -173,14 +170,14 @@ def param_hash(params: dict) -> str:
 def readable_tag() -> str:
     """Human-browsable filename stem encoding the key physics/numerics."""
     return (
-        f"{CASE}_Vc{Vc:.3f}_Mt{M_total:g}_m1{m1:g}_m2{m2:g}"
-        f"_K{K_contact:.0e}_k1{k1:.0e}_k2{k2:.0e}_phi{phi:g}"
+        f"{model}_Vc{Vc:.3f}_m1_{m1:g}_m2_{m2:g}"
+        f"_k01_{k01:.0e}_k12_{k12:.0e}_phi{phi:g}"
         f"_g{NEWMARK_GAMMA:g}_dt{dt:g}_nc{n_cells}"
     )
 
 
 def run_or_load(params: dict):
-    """Return (t, u_point, z_head, z_frame, contact_force), from cache if available."""
+    """Return (t, u_point, z1, z2, contact_force), from cache if available."""
     CACHE_DIR.mkdir(exist_ok=True)
     h = param_hash(params)
     cache_file = CACHE_DIR / f"run_{h}.npz"
@@ -188,7 +185,7 @@ def run_or_load(params: dict):
     if cache_file.exists() and not FORCE_RERUN:
         print(f"Cache HIT ({h}) -> loading (set FORCE_RERUN=True to recompute).")
         d = np.load(cache_file)
-        return d["t"], d["u_point"], d["z_head"], d["z_frame"], d["contact_force"]
+        return d["t"], d["u_point"], d["z1"], d["z2"], d["contact_force"]
 
     reason = "FORCE_RERUN" if cache_file.exists() else "no cache"
     print(f"Cache MISS ({h}, {reason}) -> running simulation.")
@@ -201,11 +198,11 @@ def run_or_load(params: dict):
         omega_ref=omega_ref,
         head_mass=m1,
         frame_mass=m2,
-        susp_stiffness=k1,
-        susp_damping=c1,
-        base_stiffness=k2,
-        base_damping=c2,
-        contact_stiffness=K_contact,
+        susp_stiffness=k12,
+        susp_damping=c12,
+        base_stiffness=0.0,   # m2 is ungrounded (matches the Floquet model)
+        base_damping=0.0,
+        contact_stiffness=k01,
         element_length=element_length,
         n_elements_per_cell=n_elements_per_cell,
         n_nodes=n_nodes,
@@ -217,7 +214,7 @@ def run_or_load(params: dict):
     np.savez(
         cache_file,
         t=output.t, u_point=output.u_point,
-        z_head=output.z_head, z_frame=output.z_frame,
+        z1=output.z_head, z2=output.z_frame,
         contact_force=output.contact_force,
         **params,
     )
@@ -301,12 +298,13 @@ def main() -> None:
     loops_in_run = V * t_max / catenary_length
 
     print("\n--- Physics ---")
-    print(f"  Case                          = {CASE}  (M_total = {M_total:g} kg)")
-    print(f"  Head / frame mass             = m1 = {m1:g} kg, m2 = {m2:g} kg")
+    print(f"  Model                         = {model}"
+          + (f"  (mu = m2/m1 = {mu:g})" if model == "2dof" else f"  (m2 fixed = {m2_fixed:g} kg)"))
+    print(f"  Masses                        = m1 = {m1:g} kg, m2 = {m2:g} kg")
     print(f"  Wave speed c                  = {c:.2f} m/s")
     print(f"  V/c                           = {Vc:.3f}  (V = {V:.2f} m/s, "
           f"{'sub-critical' if Vc < 1 else 'super-critical'})")
-    print(f"  Oscillator modes (K engaged)  = {f_osc[0]:.2f} Hz, {f_osc[1]:.2f} Hz")
+    print(f"  Oscillator modes (k01 engaged)= {f_osc[0]:.2f} Hz, {f_osc[1]:.2f} Hz")
     print(f"  Support-passing frequency     = {f_pass:.2f} Hz")
     print(f"  f_i / f_pass                  = {f_osc[0]/f_pass:.3f}, {f_osc[1]/f_pass:.3f}"
           f"  (=n/2 => parametric tongues)")
@@ -330,18 +328,18 @@ def main() -> None:
               f"(n_cells >= {int(np.ceil((c + V) * t_max / (wake_safety_factor * spacing)))}).")
 
     # --- run (or load from cache) ---
-    t, u_point, z_head, z_frame, contact_force = run_or_load(params)
+    t, u_point, z1, z2, contact_force = run_or_load(params)
 
     # structural sanity only available on a fresh run (model isn't cached)
-    model = getattr(run_or_load, "_last_model", None)
-    if model is not None:
-        print(f"\nSprings: {model.spring_nodes.size}")
-        print(f"n_dof = {model.n_dof}, expected {n_nodes + 2}")
-        print(f"contact_dof = {model.contact_dof}, frame_dof = {model.frame_dof}")
-        print(f"m1 on head DOF:  {model.mass[model.contact_dof, model.contact_dof]:.4g}")
-        print(f"m2 on frame DOF: {model.mass[model.frame_dof, model.frame_dof]:.4g}")
-        print(f"k1 coupling K[z1,z2]: {model.stiffness[model.contact_dof, model.frame_dof]:.4g}"
-              f" (expected {-k1:g})")
+    fem = getattr(run_or_load, "_last_model", None)
+    if fem is not None:
+        print(f"\nSprings: {fem.spring_nodes.size}")
+        print(f"n_dof = {fem.n_dof}, expected {n_nodes + 2}")
+        print(f"contact_dof (z1) = {fem.contact_dof}, frame_dof (z2) = {fem.frame_dof}")
+        print(f"m1 on z1 DOF: {fem.mass[fem.contact_dof, fem.contact_dof]:.4g}")
+        print(f"m2 on z2 DOF: {fem.mass[fem.frame_dof, fem.frame_dof]:.4g}")
+        print(f"k12 coupling K[z1,z2]: {fem.stiffness[fem.contact_dof, fem.frame_dof]:.4g}"
+              f" (expected {-k12:g})")
 
     # --- growth / decay ---
     g = growth_rate(t, contact_force)
@@ -358,9 +356,11 @@ def main() -> None:
         print(f"  {g['verdict']}")
 
     # --- figure ---
+    model_str = (f"{model} (mu={mu:g})" if model == "2dof"
+                 else f"{model} (m2={m2_fixed:g} kg)")
     param_text = (
-        f"{CASE}: M_t={M_total:g} kg (m1={m1:g}, m2={m2:g})   V/c={Vc:.3f} (V={V:.2f} m/s)\n"
-        f"K={K_contact:.0e}  k1={k1:.0e}  c1={c1:g}  k2={k2:.0e}  c2={c2:g}   phi={phi:g}   "
+        f"{model_str}: m1={m1:g} kg, m2={m2:g} kg   V/c={Vc:.3f} (V={V:.2f} m/s)\n"
+        f"k01={k01:.0e}  k12={k12:.0e}  c12={c12:g}   phi={phi:g}   "
         f"gamma={NEWMARK_GAMMA:g}  beta={NEWMARK_BETA:.4f}   dt={dt:g} s\n"
         f"H={tension:g}  rhoA={m:g}  ks={Kv:g}  L={spacing:g}  n_cells={n_cells}  "
         f"t_max={t_max:g}   Re(lambda)="
@@ -370,8 +370,8 @@ def main() -> None:
     fig, axes = plt.subplots(3, 1, sharex=True, figsize=(9, 9))
 
     axes[0].plot(t, u_point, label="w_c(t) string at contact")
-    axes[0].plot(t, z_head, label="z1(t) head")
-    axes[0].plot(t, z_frame, label="z2(t) frame")
+    axes[0].plot(t, z1, label="z1(t) contact mass m1")
+    axes[0].plot(t, z2, label="z2(t) secondary mass m2")
     axes[0].set_ylabel("Displacement [m]")
     axes[0].legend()
     axes[0].grid(True)
