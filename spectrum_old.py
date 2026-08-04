@@ -202,60 +202,62 @@ def line_amplitude(freq, amp, f_target, window_hz):
     return float(amp[band].max()) if np.any(band) else 0.0
 
 
-def in_band(f, low, high, pad=0.02):
-    """Which mode band (if any) contains frequency f? Returns index or None."""
-    for i, (lo, hi) in enumerate(zip(low, high)):
-        if lo * (1 - pad) <= f <= hi * (1 + pad):
-            return i
-    return None
+def mode_shape_test(comb, spectra, f_pass, p=1, resolution=0.0):
+    """Do the two lines of a comb belong to DIFFERENT modes?
 
+    This is the test that actually discriminates. A single mode at f0,
+    parametrically modulated, produces lines at f0 and (p*f_pass - f0) —
+    exactly the same positions as two modes in combination. Line positions
+    therefore cannot decide between them.
 
-def true_mode_test(comb, low, high, f_pass, p=1):
-    """Is there a genuine MODE at BOTH lines of the comb?
+    What does decide it is the mode shape. The ratio |z2|/|z1| is a
+    property of the mode, so:
 
-    This is the test that actually separates the two hypotheses, because
-    they produce identical line positions:
-
-      one mode + parametric sidebands
-          -> only f0 coincides with a mode; the partner is a forced,
-             off-resonant response with no mode behind it
-      combination resonance (omega_i + omega_j = p*omega_pass)
-          -> BOTH f0 and the partner coincide with modes, and they are
-             different modes
-
-    Mode-shape contrast CANNOT substitute for this. A sideband is a forced
-    response at an off-resonant frequency, so its |z2|/|z1| is set by the
-    driving path, not by any mode — it generally differs from the parent
-    mode's ratio, which makes a shape-contrast test report "two modes"
-    even when only one exists.
+      * one mode + sidebands  -> the ratio is the SAME at every comb line
+      * two distinct modes    -> the ratio DIFFERS between f0 and its partner
 
     Parameters
     ----------
-    low, high : array_like
-        Mode bands from modes.mode_bands (the modes breathe as the contact
-        traverses a cell, so each is a band, not a line).
+    spectra : dict
+        ``{"z1": (freq, amp), "z2": (freq, amp)}``.
+
+    Returns
+    -------
+    dict or None
+        None if z1/z2 spectra are unavailable.
     """
+    if "z1" not in spectra or "z2" not in spectra:
+        return None
+
+    f1, a1 = spectra["z1"]
+    f2, a2 = spectra["z2"]
+    window = max(3.0 * resolution, 0.004 * f_pass)
+
     f0 = comb["offset"]
     partner = p * f_pass - f0
-    i0 = in_band(f0, low, high)
-    i1 = in_band(partner, low, high) if partner > 0 else None
+    if partner <= 0:
+        return None
 
-    if i0 is not None and i1 is not None and i0 != i1:
-        verdict = ("COMBINATION RESONANCE: both lines sit on modes, "
-                   f"modes {i0+1} and {i1+1}")
-    elif i0 is not None and i1 is None:
-        verdict = (f"single mode {i0+1} with parametric sidebands "
-                   "(no mode at the partner frequency)")
-    elif i0 is None and i1 is not None:
-        verdict = (f"single mode {i1+1} with parametric sidebands "
-                   "(no mode at f0 itself)")
-    elif i0 is not None and i0 == i1:
-        verdict = f"both lines fall in the same mode band ({i0+1}) — degenerate"
-    else:
-        verdict = "no mode at either line — not an oscillator resonance"
+    def ratio(f):
+        z1 = line_amplitude(f1, a1, f, window)
+        z2 = line_amplitude(f2, a2, f, window)
+        return (z2 / z1 if z1 > 0 else np.nan), z1, z2
 
-    return {"f0": f0, "partner": partner, "mode_f0": i0,
-            "mode_partner": i1, "verdict": verdict}
+    r0, z1_0, z2_0 = ratio(f0)
+    rp, z1_p, z2_p = ratio(partner)
+
+    if not (np.isfinite(r0) and np.isfinite(rp)) or min(r0, rp) <= 0:
+        return {"ok": None, "reason": "line too weak in z1 or z2"}
+
+    contrast = abs(np.log(r0 / rp))     # 0 => identical shapes
+    return {
+        "f0": f0, "partner": partner,
+        "ratio_f0": r0, "ratio_partner": rp,
+        "z1_f0": z1_0, "z2_f0": z2_0, "z1_partner": z1_p, "z2_partner": z2_p,
+        "contrast": float(contrast),
+        "distinct": bool(contrast > 0.22),   # ~25% difference in shape ratio
+        "ok": True,
+    }
 
 
 def oscillator_modes(m1, m2, k01, k12) -> np.ndarray:
@@ -267,8 +269,6 @@ def oscillator_modes(m1, m2, k01, k12) -> np.ndarray:
     as a pass/fail criterion: a measured line 10-15% below a bound is
     entirely consistent with compliance.
     """
-    if not (m2 > 0) or k12 == 0:
-        return np.array([np.sqrt(k01 / m1) / (2 * np.pi)])   # sdof
     K = np.array([[k01 + k12, -k12], [-k12, k12]])
     M = np.diag([m1, m2])
     w = np.sqrt(np.clip(np.sort(np.linalg.eigvals(np.linalg.solve(M, K)).real),
@@ -376,58 +376,51 @@ def main() -> None:
 
     # --- what kind of instability is each comb? ---
     p = getattr(mn, "TONGUE_P", 1)
-    print(f"\n--- Mechanism (p = {p}) ---")
-    print("  One mode with parametric sidebands and two modes in combination")
-    print("  give IDENTICAL line positions. The question that separates them:")
-    print("  is there a genuine MODE at BOTH lines of the comb?\n")
+    f_modes = oscillator_modes(m1, m2, k01, k12)
+    print(f"\n--- Mode participation (p = {p}) ---")
+    print("  A single mode with parametric sidebands and two modes in")
+    print("  combination produce IDENTICAL line positions, so positions alone")
+    print("  cannot tell them apart. What does: the mode shape |z2|/|z1|,")
+    print("  which is constant across sidebands of one mode but differs")
+    print("  between two genuinely distinct modes.\n")
+    print(f"  Rigid-string modes (upper bounds, orientation only): "
+          f"{f_modes[0]:.4f}, {f_modes[1]:.4f} Hz")
 
-    try:
-        from modes import mode_bands
-        low, high, ratio, osc = mode_bands(
-            tension=mn.tension, mass_per_length=mn.m, kv=mn.Kv,
-            k01=k01, k12=k12, m1=m1, m2=max(m2, 1.0), spacing=spacing,
-            element_length_requested=0.1, n_cells=200,
-            n_modes=6, n_positions=6,
-            single_dof=(not (m2 > 0) or k12 == 0))
-    except Exception as exc:                                # noqa: BLE001
-        print(f"  could not compute true modes ({exc}).")
-        print("  Run  python modes.py  to diagnose.")
-        low = high = None
-
-    if low is not None:
-        print("  True coupled modes (bands, contact swept over one cell):")
-        for i, (lo, hi) in enumerate(zip(low, high), 1):
-            kind = "oscillator" if osc[i-1] > 0.5 else "string"
-            print(f"    mode {i}: {lo:.4f} – {hi:.4f} Hz   "
-                  f"|z2/z1| = {ratio[i-1]:.3f}   ({kind})")
-        est = oscillator_modes(m1, m2, k01, k12)
-        print("  (rigid-string estimate for orientation only: "
-              + ", ".join(f"{x:.4f}" for x in est) + " Hz)")
-
-        for c_i, comb in enumerate(combs, 1):
-            res = true_mode_test(comb, low, high, f_pass, p=p)
-            print(f"\n  Comb {c_i}: f0 = {res['f0']:.4f} Hz, "
-                  f"partner = {res['partner']:.4f} Hz")
-            print(f"    f0      -> {'mode ' + str(res['mode_f0']+1)
-                                    if res['mode_f0'] is not None
-                                    else 'no mode at this frequency'}")
-            print(f"    partner -> {'mode ' + str(res['mode_partner']+1)
-                                    if res['mode_partner'] is not None
-                                    else 'no mode at this frequency'}")
-            print(f"    => {res['verdict']}")
-
-            # simple parametric check on the identified mode
-            idx = res["mode_f0"] if res["mode_f0"] is not None else res["mode_partner"]
-            if idx is not None:
-                mid = 0.5 * (low[idx] + high[idx])
-                n = 2 * mid / f_pass
-                if abs(n - round(n)) < 0.12 and round(n) >= 1:
-                    print(f"       2*f_mode/f_pass = {n:.3f} ~ {round(n)}: "
-                          f"simple parametric resonance of mode {idx+1}"
-                          f"{' (principal 2T)' if round(n) == 1 else ''}")
-                else:
-                    print(f"       2*f_mode/f_pass = {n:.3f} — not near an "
-                          "integer, so not a simple parametric resonance")
+    if not spectra:
+        print("\n  z1/z2 not stored in this cache file — cannot run the test.")
+    for c_i, comb in enumerate(combs, 1):
+        res = mode_shape_test(comb, spectra, f_pass, p=p, resolution=resolution)
+        print(f"\n  Comb {c_i}: f0 = {comb['offset']:.4f} Hz, "
+              f"partner = {p*f_pass - comb['offset']:.4f} Hz")
+        if res is None:
+            print("    (z1/z2 spectra unavailable)")
+            continue
+        if res.get("ok") is None:
+            print(f"    inconclusive: {res['reason']}")
+            continue
+        print(f"    |z2|/|z1| at f0      = {res['ratio_f0']:.3f}  (arbitrary scale)")
+        print(f"    |z2|/|z1| at partner = {res['ratio_partner']:.3f}  (same scale)")
+        print(f"    shape contrast       = {res['contrast']:.3f} "
+              f"(0 = identical mode shape; >0.22 = distinct)")
+        if res["distinct"]:
+            print("    => the two lines have DIFFERENT mode shapes: two distinct")
+            print("       modes participate. Consistent with a COMBINATION "
+                  "RESONANCE.")
+        else:
+            print("    => same mode shape at both lines: this is ONE mode with")
+            print("       parametric sidebands, NOT a combination resonance.")
+        for f_m, name in zip(f_modes, ("mode 1", "mode 2")):
+            for f_obs, tag in ((comb["offset"], "f0"),
+                               (p*f_pass - comb["offset"], "partner")):
+                rel = (f_obs - f_m) / f_m * 100
+                if abs(rel) < 25:
+                    if rel < 2.0:
+                        note = "plausible — string compliance lowers modes"
+                    elif rel < 5.0:
+                        note = "essentially at the bound"
+                    else:
+                        note = "ABOVE the rigid-string bound — cannot be this mode"
+                    print(f"       {tag} vs {name}: {rel:+.1f}%  ({note})")
 
     # --- figure ---
     import thesis_plots as tp

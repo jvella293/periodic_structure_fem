@@ -66,18 +66,20 @@ except ImportError:
 dt = 5e-4
 
 # --- string ---
-tension = 1.0e4
+tension = 2.0e4
 damp_string = 0.0   # no string damping in the PDE
 m = 1.1             # mass per unit length of the string [kg/m]
 
 # --- derived wave speed and dimensional velocity ---
 c = np.sqrt(tension / m)     # string wave speed [m/s]
-V = 19.777                   # dimensional speed taken from the Floquet point
-Vc = V / c
+#V = 22.247460415730487       # dimensional speed taken from the Floquet point
+Vc = 0.22
+#Vc = V / c
+V = Vc * c
 
 # --- contact oscillator: 2 DOF (names match the Floquet code) ---
-model = "2dof"      # "sdof" | "2dof" (m2 = mu*m1) | "2dof_fixedM2" (m2 fixed)
-m1 = 147.741        # contact mass [kg] — CENTRE of the Floquet tongue
+model = "2dof"      # "2dof" (m2 = mu*m1) | "2dof_fixedM2" (m2 fixed in kg)
+m1 = 158.2556       # contact mass [kg] — CENTRE of the Floquet tongue
 mu = 0.5            # mass ratio m2/m1        (used only when model = "2dof")
 m2_fixed = 50.0     # secondary mass [kg]     (used only when model = "2dof_fixedM2")
 
@@ -104,37 +106,29 @@ TONGUE_MODE = 0                    # which omega_i (0 or 1) for "simple"
 # TONGUE_ORDER to size their expected-rate estimate.
 TONGUE_ORDER = (TONGUE_N / TONGUE_P) if TONGUE_TYPE == "simple" else TONGUE_P
 
-if model == "sdof":
-    # Single lumped mass on the contact spring — the original 1-DOF model,
-    # and the Floquet code's "sdof" case. The secondary DOF is constrained
-    # out in the solver; m2 is a placeholder that never enters the physics.
-    m2 = 0.0
-elif model == "2dof":
+if model == "2dof":
     m2 = mu * m1
 elif model == "2dof_fixedM2":
     m2 = m2_fixed
 else:
     raise ValueError(f"unknown model {model!r}")
 
-k01 = 1.0e4         # contact spring (string -- m1) [N/m]
-k12 = 1.0e3         # secondary spring (m1 -- m2) [N/m]
+k01 = 1.0e5         # contact spring (string -- m1) [N/m]
+k12 = 3.0e3         # secondary spring (m1 -- m2) [N/m]
 c12 = 0.0           # secondary viscous damping [N s/m] (0 = undamped validation)
 
-if model == "sdof":
-    k12 = c12 = 0.0     # no secondary spring exists in the 1-DOF model
-
 # --- periodic section ---
-spacing = 10.0
-n_cells = 800
+spacing = 15.0
+n_cells = 2060
 element_length_requested = 0.1
 
 # --- vertical supports at periodic positions ---
-Kv = 4.0e3
+Kv = 8.0e3
 phi = 0                                        # support loss factor (0 = undamped validation)
 omega_ref = 2.0 * np.pi * V / spacing
 
 # --- run length ---
-t_max = 50
+t_max = 60
 
 # --- growth-rate estimator ---
 SETTLE_PERIODS = 3.0    # support-passing periods discarded as transient
@@ -173,20 +167,15 @@ element_length, n_elements_per_cell, n_nodes, catenary_length = mesh_parameters(
 # ======================================================================
 
 def oscillator_frequencies() -> np.ndarray:
-    """Natural frequencies [Hz] of the oscillator with the contact spring
-    engaged and the string held rigid.
+    """Natural frequencies [Hz] of the 2-DOF oscillator with the contact
+    spring engaged and the string held rigid:
 
-    2-DOF:  K_osc = [[k01 + k12, -k12],    M_osc = diag(m1, m2)
-                     [-k12,       k12]]
-    sdof:   a single frequency sqrt(k01 / m1).
+        K_osc = [[k01 + k12, -k12],     M_osc = diag(m1, m2)
+                 [-k12,       k12]]
 
-    These are crude orientation figures, NOT reliable bounds: in the
-    string's stopband the driving-point reactance can be mass-like and
-    push a coupled mode above the rigid-string value. Use modes.py for
-    the true coupled modes.
+    These are UPPER BOUNDS on the true coupled frequencies (the string is
+    compliant, which softens both modes).
     """
-    if model == "sdof":
-        return np.array([np.sqrt(k01 / m1) / (2.0 * np.pi)])
     k_osc = np.array([[k01 + k12, -k12], [-k12, k12]])
     m_osc = np.diag([m1, m2])
     eigvals = np.sort(np.linalg.eigvals(np.linalg.solve(m_osc, k_osc)).real)
@@ -205,18 +194,11 @@ def resonance_check(f_osc: np.ndarray, f_pass: float) -> dict:
     string's compliance lowers both modes, so a truly tuned V is slightly
     lower than the value reported here.
     """
-    w1 = 2 * np.pi * f_osc[0]
-    w2 = 2 * np.pi * f_osc[1] if f_osc.size > 1 else None
+    w1, w2 = 2 * np.pi * f_osc[0], 2 * np.pi * f_osc[1]
     w_pass = 2 * np.pi * f_pass
 
-    if w2 is None and TONGUE_TYPE.startswith("combination"):
-        raise ValueError(
-            "combination resonances need two oscillator modes; "
-            "set TONGUE_TYPE = 'simple' when model = 'sdof'."
-        )
-
     if TONGUE_TYPE == "simple":
-        w_i = w1 if (w2 is None or TONGUE_MODE == 0) else w2
+        w_i = (w1, w2)[TONGUE_MODE]
         f_detuned = TONGUE_N * w_i / (2 * np.pi)
         condition = (f"{TONGUE_N} * omega_{TONGUE_MODE+1} = {TONGUE_P} * omega_pass"
                      f"   ({TONGUE_N}T subharmonic)" if TONGUE_P == 1 else
@@ -294,8 +276,7 @@ def run_or_load(params: dict):
     output = solve_moving_load(
         tension=tension, damp_string=damp_string, mass_per_length=m,
         kv=Kv, phi=phi, omega_ref=omega_ref,
-        head_mass=m1, frame_mass=max(m2, 1.0),  # dummy if constrained
-        model_type=model,
+        head_mass=m1, frame_mass=m2,
         susp_stiffness=k12, susp_damping=c12,
         base_stiffness=0.0, base_damping=0.0,   # m2 ungrounded, as in Floquet
         contact_stiffness=k01,
@@ -459,21 +440,11 @@ def main() -> None:
 
     print("\n--- Physics ---")
     print(f"  Model                         = {model}"
-          + ("  (single mass on the contact spring)" if model == "sdof" else
-             f"  (mu = {mu:g})" if model == "2dof" else
-             f"  (m2 = {m2_fixed:g} kg)"))
-    if model == "sdof":
-        print(f"  Mass                          = m1 = {m1:g} kg "
-              f"(single DOF; m2 constrained out, k12 = 0)")
-    else:
-        print(f"  Masses                        = m1 = {m1:g} kg, m2 = {m2:g} kg")
+          + (f"  (mu = {mu:g})" if model == "2dof" else f"  (m2 = {m2_fixed:g} kg)"))
+    print(f"  Masses                        = m1 = {m1:g} kg, m2 = {m2:g} kg")
     print(f"  Wave speed c                  = {c:.2f} m/s")
     print(f"  V/c                           = {Vc:.4f}  (V = {V:.4f} m/s)")
-    if f_osc.size == 1:
-        print(f"  Oscillator mode (rigid str.)  = {f_osc[0]:.4f} Hz  (upper bound)")
-    else:
-        print(f"  Oscillator modes (rigid str.) = {f_osc[0]:.4f} Hz, "
-              f"{f_osc[1]:.4f} Hz  (upper bounds)")
+    print(f"  Oscillator modes (rigid str.) = {f_osc[0]:.4f} Hz, {f_osc[1]:.4f} Hz  (upper bounds)")
     print(f"  Support-passing frequency     = {f_pass:.4f} Hz  (T_pass = {T_pass:.4f} s)")
 
     res = resonance_check(f_osc, f_pass)
@@ -484,7 +455,6 @@ def main() -> None:
     else:
         print(f"  Response frequencies          = {f_osc[0]:.4f} Hz AND "
               f"{f_osc[1]:.4f} Hz (two components — no single subharmonic)")
-
     print(f"  Tuning ratio (want ~1.000)    = {res['ratio']:.4f}"
           + ("" if res["tuned"] else
              f"   <-- OFF TUNE: try V ~ {res['V_tuned']:.4f} m/s"))
@@ -593,14 +563,14 @@ def main() -> None:
     # Full-history displacement is usually unreadable once there are
     # hundreds of cycles; the zoom on the last few periods is the figure
     # that actually shows the waveform.
-    _, p = tp.fig_displacement(t, u_point, z1, z2 if (SHOW_Z2 and model != 'sdof') else None,
+    _, p = tp.fig_displacement(t, u_point, z1, z2 if SHOW_Z2 else None,
                                stem=f"{stem}_disp", header=param_text)
     paths.append(p)
 
     if ZOOM_PERIODS:
         t_end = float(t[-1])
         t0 = max(float(t[0]), t_end - ZOOM_PERIODS * T_pass)
-        _, p = tp.fig_displacement(t, u_point, z1, z2 if (SHOW_Z2 and model != 'sdof') else None,
+        _, p = tp.fig_displacement(t, u_point, z1, z2 if SHOW_Z2 else None,
                                    stem=f"{stem}_disp_zoom", header=param_text,
                                    t_window=(t0, t_end))
         paths.append(p)

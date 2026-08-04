@@ -61,7 +61,6 @@ def solve_moving_load(
     base_stiffness: float,
     base_damping: float,
     contact_stiffness: float,
-    model_type: str = "2dof",
     element_length: float,
     n_elements_per_cell: int,
     n_nodes: int,
@@ -105,28 +104,11 @@ def solve_moving_load(
         catenary_length=catenary_length,
         show_progress=show_progress,
     )
-    # "sdof": the secondary mass is removed by constraining its DOF out of
-    # the free set. Combined with k12 = 0 (enforced by the caller) this
-    # leaves exactly the single-mass oscillator: m1 on the contact spring
-    # and nothing else. Keeping the DOF present but constrained avoids
-    # duplicating the assembly for a second system size.
-    single_dof = model_type == "sdof"
-    if single_dof:
-        free_dofs = np.delete(model.free_dofs,
-                              np.where(model.free_dofs == model.frame_dof))
-        if susp_stiffness != 0.0 or susp_damping != 0.0:
-            raise ValueError(
-                "model='sdof' requires k12 = c12 = 0; otherwise the "
-                "constrained frame DOF would ground m1 through k12."
-            )
-    else:
-        free_dofs = model.free_dofs
-
     integrator = NewmarkIntegrator.from_model(
         mass=model.mass,
         stiffness=model.stiffness,
         damping=model.damping,
-        free_dofs=free_dofs,
+        free_dofs=model.free_dofs,
         dt=dt,
     )
     cache = ContactSolveCache(integrator, model.n_dof, model.contact_dof)
@@ -138,8 +120,7 @@ def solve_moving_load(
     # Seed BOTH oscillator DOFs: a z1-only seed can under-excite a mode with
     # a near-node at the contact mass.
     state.velocity[model.contact_dof] = 1.0e-6
-    if not single_dof:
-        state.velocity[model.frame_dof] = 1.0e-6
+    state.velocity[model.frame_dof] = 1.0e-6
 
     t_all = np.arange(0.0, t_max + 0.5 * dt, dt)
     output_stride = max(1, int(round(dt_out / dt)))
