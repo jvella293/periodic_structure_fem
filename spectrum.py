@@ -106,7 +106,8 @@ def fold(f: float, f_pass: float) -> float:
     return min(r, f_pass - r)
 
 
-def find_combs(lines, amps, f_pass, tol_hz=None, min_members=2, max_combs=4):
+def find_combs(lines, amps, f_pass, tol_hz=None, min_members=2, max_combs=4,
+               resolution=0.0):
     """Extract interleaved Floquet combs from a line list.
 
     Repeatedly takes the strongest unassigned line, folds it to get an
@@ -154,7 +155,7 @@ def find_combs(lines, amps, f_pass, tol_hz=None, min_members=2, max_combs=4):
                 "ratio": offset / f_pass,
                 "members": members,
                 "strength": float(sum(m[1] for m in members)),
-                "kind": classify_offset(offset, f_pass),
+                "kind": classify_offset(offset, f_pass, resolution),
             })
             remaining = leftover
         else:
@@ -165,18 +166,29 @@ def find_combs(lines, amps, f_pass, tol_hz=None, min_members=2, max_combs=4):
     return combs
 
 
-def classify_offset(offset: float, f_pass: float, tol=0.03) -> str:
-    """Interpret a comb offset."""
+def classify_offset(offset: float, f_pass: float, resolution: float = 0.0) -> str:
+    """Interpret a comb offset, using the frequency resolution as the yardstick.
+
+    Whether an offset counts as "exactly f_pass/2" depends on how well the
+    run resolves frequency: a 0.06 Hz deviation is noise in a 10 s run and
+    a hard fact in a 150 s one. So the test compares the deviation against
+    the resolution, not against an arbitrary fixed percentage.
+    """
     r = offset / f_pass
-    if r < tol:
-        return "1T harmonic (integer multiples of f_pass)"
-    if abs(r - 0.5) < tol:
-        return "2T subharmonic (half-integer multiples of f_pass)"
-    if abs(r - 0.5) < 0.10:
-        split = (0.5 - r) * f_pass
-        return (f"near-2T: split {split:+.4f} Hz either side of f_pass/2 "
-                "— characteristic of being just OUTSIDE a 2T tongue "
-                "(inside, the pair locks onto f_pass/2 exactly)")
+    dev_hz = abs(offset - f_pass / 2)
+    tol_hz = max(3.0 * resolution, 0.002 * f_pass)
+
+    if offset < tol_hz:
+        return "1T harmonic (lines at integer multiples of f_pass)"
+    if dev_hz < tol_hz:
+        return (f"2T subharmonic — locked to f_pass/2 within {tol_hz*1e3:.1f} mHz "
+                "(consistent with being INSIDE a 2T tongue)")
+    if dev_hz < 0.12 * f_pass:
+        n_res = dev_hz / resolution if resolution > 0 else np.inf
+        return (f"near-2T but NOT locked: the pair sits {dev_hz:.4f} Hz either "
+                f"side of f_pass/2 ({n_res:.0f}x the frequency resolution). "
+                "A resolved split means the exponents are still complex — "
+                "i.e. just OUTSIDE the 2T tongue.")
     return f"incommensurate, offset = {r:.4f} * f_pass"
 
 
@@ -184,50 +196,84 @@ def classify_offset(offset: float, f_pass: float, tol=0.03) -> str:
 # Combination resonance — the non-degenerate test
 # ----------------------------------------------------------------------
 
+def line_amplitude(freq, amp, f_target, window_hz):
+    """Peak amplitude of a spectrum within +/-window_hz of f_target."""
+    band = np.abs(freq - f_target) <= window_hz
+    return float(amp[band].max()) if np.any(band) else 0.0
+
+
+def mode_shape_test(comb, spectra, f_pass, p=1, resolution=0.0):
+    """Do the two lines of a comb belong to DIFFERENT modes?
+
+    This is the test that actually discriminates. A single mode at f0,
+    parametrically modulated, produces lines at f0 and (p*f_pass - f0) —
+    exactly the same positions as two modes in combination. Line positions
+    therefore cannot decide between them.
+
+    What does decide it is the mode shape. The ratio |z2|/|z1| is a
+    property of the mode, so:
+
+      * one mode + sidebands  -> the ratio is the SAME at every comb line
+      * two distinct modes    -> the ratio DIFFERS between f0 and its partner
+
+    Parameters
+    ----------
+    spectra : dict
+        ``{"z1": (freq, amp), "z2": (freq, amp)}``.
+
+    Returns
+    -------
+    dict or None
+        None if z1/z2 spectra are unavailable.
+    """
+    if "z1" not in spectra or "z2" not in spectra:
+        return None
+
+    f1, a1 = spectra["z1"]
+    f2, a2 = spectra["z2"]
+    window = max(3.0 * resolution, 0.004 * f_pass)
+
+    f0 = comb["offset"]
+    partner = p * f_pass - f0
+    if partner <= 0:
+        return None
+
+    def ratio(f):
+        z1 = line_amplitude(f1, a1, f, window)
+        z2 = line_amplitude(f2, a2, f, window)
+        return (z2 / z1 if z1 > 0 else np.nan), z1, z2
+
+    r0, z1_0, z2_0 = ratio(f0)
+    rp, z1_p, z2_p = ratio(partner)
+
+    if not (np.isfinite(r0) and np.isfinite(rp)) or min(r0, rp) <= 0:
+        return {"ok": None, "reason": "line too weak in z1 or z2"}
+
+    contrast = abs(np.log(r0 / rp))     # 0 => identical shapes
+    return {
+        "f0": f0, "partner": partner,
+        "ratio_f0": r0, "ratio_partner": rp,
+        "z1_f0": z1_0, "z2_f0": z2_0, "z1_partner": z1_p, "z2_partner": z2_p,
+        "contrast": float(contrast),
+        "distinct": bool(contrast > 0.22),   # ~25% difference in shape ratio
+        "ok": True,
+    }
+
+
 def oscillator_modes(m1, m2, k01, k12) -> np.ndarray:
-    """Natural frequencies [Hz] with the string held rigid (upper bounds)."""
+    """Natural frequencies [Hz] with the string held rigid.
+
+    These are UPPER BOUNDS — the string is compliant, which lowers both
+    modes by an amount that depends on the contact position and is not
+    known a priori. They are useful for orientation but must NOT be used
+    as a pass/fail criterion: a measured line 10-15% below a bound is
+    entirely consistent with compliance.
+    """
     K = np.array([[k01 + k12, -k12], [-k12, k12]])
     M = np.diag([m1, m2])
     w = np.sqrt(np.clip(np.sort(np.linalg.eigvals(np.linalg.solve(M, K)).real),
                         0.0, None))
     return w / (2 * np.pi)
-
-
-def combination_test(combs, f_pass, f_modes, p=1, tol_rel=0.08):
-    """Does a comb pair up two DISTINCT oscillator modes?
-
-    A comb with offset f0 always contains f0 and (p*f_pass - f0), summing
-    to p*f_pass by construction — so the sum proves nothing. The real
-    question is whether those two frequencies coincide with two different
-    natural modes of the oscillator.
-
-    Note that f_modes are rigid-string UPPER BOUNDS; string compliance
-    lowers the true modes, so a measured line slightly below a bound is
-    expected, whereas one above it cannot be that mode.
-    """
-    results = []
-    for comb in combs:
-        f0 = comb["offset"]
-        partner = p * f_pass - f0
-        if partner <= 0:
-            continue
-
-        def match(f):
-            errs = np.abs(f_modes - f) / np.maximum(f_modes, 1e-12)
-            i = int(np.argmin(errs))
-            return i, float(errs[i]), bool(f <= f_modes[i] * (1 + tol_rel))
-
-        i0, e0, below0 = match(f0)
-        i1, e1, below1 = match(partner)
-        ok = (e0 < tol_rel and e1 < tol_rel and i0 != i1 and below0 and below1)
-        results.append({
-            "offset": f0, "partner": partner,
-            "mode_of_offset": i0, "err_offset": e0,
-            "mode_of_partner": i1, "err_partner": e1,
-            "distinct_modes": i0 != i1,
-            "verdict": ok,
-        })
-    return results
 
 
 # ----------------------------------------------------------------------
@@ -299,8 +345,17 @@ def main() -> None:
     freq, amp = detrended_spectrum(t, d[key], rate=rate, T_pass=T_pass)
     lines, line_amps = find_lines(freq, amp, fmax, threshold=args.threshold)
 
-    combs = find_combs(lines, line_amps, f_pass)
-    print(f"\n--- {len(combs)} Floquet comb(s) found in {label} "
+    resolution = 1.0 / (t[-1] - t[0])
+    combs = find_combs(lines, line_amps, f_pass, resolution=resolution)
+
+    # z1/z2 spectra are needed for the mode-shape test below
+    spectra = {}
+    for name in ("z1", "z2"):
+        if name in d.files:
+            spectra[name] = detrended_spectrum(t, d[name], rate=rate,
+                                               T_pass=T_pass)
+
+    print(f"\n--- {len(combs)} Floquet comb(s) in {label} "
           f"(lines above {args.threshold:.0%} of peak, up to {fmax:.2f} Hz) ---")
 
     for c_i, comb in enumerate(combs, 1):
@@ -315,37 +370,57 @@ def main() -> None:
     if len(combs) > 1:
         d01 = abs(combs[0]["offset"] - combs[1]["offset"])
         print(f"\n  NOTE: {len(combs)} combs coexist — several Floquet solutions "
-              f"are excited at once.")
-        print(f"  Their offsets differ by {d01:.4f} Hz; each has its OWN "
-              f"Re(lambda), and the")
-        print(f"  envelope fit returns whichever dominates. To separate them, "
-              f"band-pass")
-        print(f"  around each comb and fit the rate of each band separately.")
+              f"are excited at once (offsets differ by {d01:.4f} Hz).")
+        print("  Each has its OWN Re(lambda); the envelope fit returns whichever "
+              "dominates.")
 
-    # --- combination resonance, tested properly ---
-    f_modes = oscillator_modes(m1, m2, k01, k12)
+    # --- what kind of instability is each comb? ---
     p = getattr(mn, "TONGUE_P", 1)
-    print(f"\n--- Combination-resonance test (p = {p}) ---")
-    print(f"  Rigid-string modes (UPPER bounds): "
-          f"f_1 = {f_modes[0]:.4f} Hz, f_2 = {f_modes[1]:.4f} Hz")
-    print("  A comb always contains f0 and (p*f_pass - f0), which sum to")
-    print("  p*f_pass by construction — so a sum test alone proves nothing.")
-    print("  The real question: do those two land on two DISTINCT modes?\n")
+    f_modes = oscillator_modes(m1, m2, k01, k12)
+    print(f"\n--- Mode participation (p = {p}) ---")
+    print("  A single mode with parametric sidebands and two modes in")
+    print("  combination produce IDENTICAL line positions, so positions alone")
+    print("  cannot tell them apart. What does: the mode shape |z2|/|z1|,")
+    print("  which is constant across sidebands of one mode but differs")
+    print("  between two genuinely distinct modes.\n")
+    print(f"  Rigid-string modes (upper bounds, orientation only): "
+          f"{f_modes[0]:.4f}, {f_modes[1]:.4f} Hz")
 
-    for c_i, (comb, res) in enumerate(
-            zip(combs, combination_test(combs, f_pass, f_modes, p=p)), 1):
-        print(f"  Comb {c_i}: f0 = {res['offset']:.4f}, "
-              f"partner = {res['partner']:.4f} Hz")
-        print(f"    f0      closest to mode {res['mode_of_offset']+1} "
-              f"({f_modes[res['mode_of_offset']]:.4f} Hz), "
-              f"relative error {res['err_offset']*100:.1f}%")
-        print(f"    partner closest to mode {res['mode_of_partner']+1} "
-              f"({f_modes[res['mode_of_partner']]:.4f} Hz), "
-              f"relative error {res['err_partner']*100:.1f}%")
-        print(f"    => {'CONSISTENT with a combination resonance'
-                       if res['verdict'] else
-                       'NOT a clean combination resonance '
-                       '(see errors / distinctness above)'}")
+    if not spectra:
+        print("\n  z1/z2 not stored in this cache file — cannot run the test.")
+    for c_i, comb in enumerate(combs, 1):
+        res = mode_shape_test(comb, spectra, f_pass, p=p, resolution=resolution)
+        print(f"\n  Comb {c_i}: f0 = {comb['offset']:.4f} Hz, "
+              f"partner = {p*f_pass - comb['offset']:.4f} Hz")
+        if res is None:
+            print("    (z1/z2 spectra unavailable)")
+            continue
+        if res.get("ok") is None:
+            print(f"    inconclusive: {res['reason']}")
+            continue
+        print(f"    |z2|/|z1| at f0      = {res['ratio_f0']:.3f}  (arbitrary scale)")
+        print(f"    |z2|/|z1| at partner = {res['ratio_partner']:.3f}  (same scale)")
+        print(f"    shape contrast       = {res['contrast']:.3f} "
+              f"(0 = identical mode shape; >0.22 = distinct)")
+        if res["distinct"]:
+            print("    => the two lines have DIFFERENT mode shapes: two distinct")
+            print("       modes participate. Consistent with a COMBINATION "
+                  "RESONANCE.")
+        else:
+            print("    => same mode shape at both lines: this is ONE mode with")
+            print("       parametric sidebands, NOT a combination resonance.")
+        for f_m, name in zip(f_modes, ("mode 1", "mode 2")):
+            for f_obs, tag in ((comb["offset"], "f0"),
+                               (p*f_pass - comb["offset"], "partner")):
+                rel = (f_obs - f_m) / f_m * 100
+                if abs(rel) < 25:
+                    if rel < 2.0:
+                        note = "plausible — string compliance lowers modes"
+                    elif rel < 5.0:
+                        note = "essentially at the bound"
+                    else:
+                        note = "ABOVE the rigid-string bound — cannot be this mode"
+                    print(f"       {tag} vs {name}: {rel:+.1f}%  ({note})")
 
     # --- figure ---
     import thesis_plots as tp

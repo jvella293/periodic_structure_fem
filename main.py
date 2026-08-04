@@ -79,7 +79,7 @@ V = Vc * c
 
 # --- contact oscillator: 2 DOF (names match the Floquet code) ---
 model = "2dof"      # "2dof" (m2 = mu*m1) | "2dof_fixedM2" (m2 fixed in kg)
-m1 = 147.757       # contact mass [kg] — CENTRE of the Floquet tongue
+m1 = 158.2556       # contact mass [kg] — CENTRE of the Floquet tongue
 mu = 0.5            # mass ratio m2/m1        (used only when model = "2dof")
 m2_fixed = 50.0     # secondary mass [kg]     (used only when model = "2dof_fixedM2")
 
@@ -113,8 +113,8 @@ elif model == "2dof_fixedM2":
 else:
     raise ValueError(f"unknown model {model!r}")
 
-k01 = 1.0e4         # contact spring (string -- m1) [N/m]
-k12 = 1.0e3         # secondary spring (m1 -- m2) [N/m]
+k01 = 1.0e5         # contact spring (string -- m1) [N/m]
+k12 = 3.0e3         # secondary spring (m1 -- m2) [N/m]
 c12 = 0.0           # secondary viscous damping [N s/m] (0 = undamped validation)
 
 # --- periodic section ---
@@ -128,7 +128,7 @@ phi = 0                                        # support loss factor (0 = undamp
 omega_ref = 2.0 * np.pi * V / spacing
 
 # --- run length ---
-t_max = 150
+t_max = 60
 
 # --- growth-rate estimator ---
 SETTLE_PERIODS = 3.0    # support-passing periods discarded as transient
