@@ -1,0 +1,2 @@
+m1,m2,V,Vc,k01,k12,phi,rate,err,floor,consistent,verdict,t_max,dt,n_cells,element_length,hash,timestamp
+147.757,73.8785,29.66479394838265,0.22,10000.0,1000.0,0,-0.000603183734876217,8.487535224881237e-06,0.0006462933967419234,True,NEUTRAL (|rate| below resolvable 0.0006 1/s),150,0.0005,2060,0.1,c5b39ecdf0d5,2026-08-03T21:35:24
