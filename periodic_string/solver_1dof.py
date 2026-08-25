@@ -7,9 +7,17 @@ from tqdm import tqdm
 from scipy import sparse
 from scipy.sparse.linalg import splu
 
-from periodic_string.assembly import AssembledModel, assemble_model
-from periodic_string.moving_load import wrap_load_position, contact_direction
-from periodic_string.newmark import NewmarkIntegrator, NewmarkState
+from periodic_string.assembly_1dof import AssembledModel, assemble_model
+from periodic_string.moving_load_1dof import (
+    wrap_load_position,
+    contact_direction,
+    contact_triplet,
+)
+from periodic_string.newmark import (
+    NewmarkIntegrator,
+    NewmarkState,
+    ContactSolveCache,
+)
 
 
 @dataclass(frozen=True)
@@ -192,6 +200,8 @@ def solve_moving_load(
         free_dofs=model.free_dofs,
         dt=dt,
     )
+    # Supplies A^-1 d(t); re-solves only when the contact crosses an element.
+    cache = ContactSolveCache(integrator, model.n_dof, model.mass_dof)
 
     g = 9.81  # gravitational acceleration [m/s^2]
 
@@ -223,27 +233,32 @@ def solve_moving_load(
             load_x = 0.5 * catenary_length
 
         load_x = wrap_load_position(load_x, x_min, x_max)
-        d = contact_direction(model.node_x, load_x, x_max, model.n_dof, model.mass_dof)
+
+        dofs, values, left, right, w_left, w_right = contact_triplet(
+            load_x, element_length, n_nodes, model.mass_dof
+        )
+        contact_solved = cache.get(left, right, w_left, w_right)
 
         state = integrator.step(
             state=state,
-            contact_direction=d,
+            contact_dofs=dofs,
+            contact_values=values,
+            contact_solved=contact_solved,
             contact_stiffness=model.contact_stiffness,
             external_force=external_force,
             mass=model.mass,
             damping=model.damping,
         )
 
-        if not np.isfinite(state.displacement).all():
+        if not np.isfinite(state.displacement[model.mass_dof]):
             print(f"Non-finite state at t = {time:.4f} s — stopping early.")
             break
 
         if step_index % output_stride == 0:
-            # w_c(t) = N(t).T @ w  — the string DOF entries of d are N(t)
-            shape = d.copy()
-            shape[model.mass_dof] = 0.0
-            w_c = float(shape @ state.displacement)
-            z = float(state.displacement[model.mass_dof])
+            # w_c(t) = N(t).T @ w — only two entries are nonzero.
+            u = state.displacement
+            w_c = w_left * u[left] + w_right * u[right]
+            z = float(u[model.mass_dof])
 
             t_out.append(time)
             u_point.append(w_c)

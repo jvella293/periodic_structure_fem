@@ -36,8 +36,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.signal import find_peaks
 
-from periodic_string.assembly import mesh_parameters
-from periodic_string.solver import solve_moving_load
+from periodic_string.assembly_1dof import mesh_parameters
+from periodic_string.solver_1dof import solve_moving_load
 
 # Surface the Newmark coefficients so the filename reflects what actually ran.
 # newmark.py should expose these as module constants; the fallback is only a
@@ -60,33 +60,34 @@ dt = 1e-4
 # --- string ---
 tension = 2.0e4
 damp_string = 0.0   # no string damping in the PDE
-m = 1.1             # mass per unit length of the string [kg/m]
+m = 1.35             # mass per unit length of the string [kg/m]
 
 # --- derived wave speed and dimensional velocity ---
 c = np.sqrt(tension / m)     # string wave speed [m/s]
-Vc = 0.2
+Vc = 0.201909547738693 
 #V = 22.8641692487534                   # dimensional load speed [m/s]
 #Vc = V / c
 V = Vc * c
 # --- contact oscillator ---
-M_mass = 75        # mass [kg]
-K_contact = 1.0e3   # contact spring stiffness [N/m]
+M_mass = 77.6923883751325        # mass [kg]
+K_contact = 1.0e5   # contact spring stiffness [N/m]
 
 # --- periodic section ---
-spacing = 10.0
-n_cells = 800
-element_length_requested = 0.05
+spacing = 6.5
+n_cells = 1000
+element_length_requested = 0.1
 
 # --- vertical supports at periodic positions ---
-Kv = 4.0e3                                    # discrete support stiffness [N/m], = ek
-phi = 0                                        # support loss factor (0 = undamped validation)
-omega_ref = 2.0 * np.pi * V / spacing          # support-passing frequency [rad/s]
+Kv = 6.15e4  
+eta = 0                                 # discrete support stiffness [N/m], = ek                                    # support loss factor (0 = undamped validation)
+omega_ref = 2.0 * np.pi * V / spacing   
+phi = eta * omega_ref        # support-passing frequency [rad/s]
 
 # --- run length ---
-t_max = 30
+t_max = 20
 
 # --- cache / output control ---
-FORCE_RERUN = False                 # True => recompute even if a cache hit exists
+FORCE_RERUN = True                 # True => recompute even if a cache hit exists
 CACHE_DIR = Path("cache")
 FIG_DIR = Path("figures")
 

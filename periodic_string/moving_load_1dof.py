@@ -28,6 +28,67 @@ def wrap_load_position(x: float, x_min: float, x_max: float) -> float:
     return x
 
 
+def contact_element(
+    x: float,
+    element_length: float,
+    n_nodes: int,
+) -> tuple[int, int, float, float]:
+    """Locate the element containing ``x`` and its shape-function weights.
+
+    The mesh is uniform and periodic, so the element index is arithmetic —
+    no search. Equivalent to the scan in :func:`load_shape_vector`, but O(1)
+    per call, which matters inside the time loop.
+
+    Parameters
+    ----------
+    x : float
+        Load position along the catenary, already wrapped into the domain.
+    element_length : float
+        Uniform element length.
+    n_nodes : int
+        Number of string nodes (also the number of elements, as the mesh
+        closes on itself).
+
+    Returns
+    -------
+    node_left, node_right : int
+        Global node indices of the containing element.
+    w_left, w_right : float
+        Linear shape-function values, summing to unity.
+    """
+    pos = x / element_length
+    index = int(pos)
+    if index >= n_nodes:          # guard against x exactly at the wrap point
+        index = n_nodes - 1
+    frac = pos - index
+    return index, (index + 1) % n_nodes, 1.0 - frac, frac
+
+
+def contact_triplet(
+    x: float,
+    element_length: float,
+    n_nodes: int,
+    mass_dof: int,
+) -> tuple[np.ndarray, np.ndarray, int, int, float, float]:
+    """Sparse form of ``d(t) = [N(t); -1]``: three DOF indices and values.
+
+    Returns
+    -------
+    dofs : numpy.ndarray of int
+        ``[node_left, node_right, mass_dof]``.
+    values : numpy.ndarray of float
+        ``[w_left, w_right, -1.0]``.
+    node_left, node_right : int
+        Element node indices (also returned separately for the solve cache).
+    w_left, w_right : float
+        Shape-function weights.
+    """
+    left, right, w_left, w_right = contact_element(x, element_length, n_nodes)
+    dofs = np.array([left, right, mass_dof], dtype=np.intp)
+    values = np.array([w_left, w_right, -1.0], dtype=float)
+    return dofs, values, left, right, w_left, w_right
+
+
 def load_shape_vector(
     node_x: np.ndarray,
     x: float,

@@ -42,7 +42,10 @@ FONT = "stix"
 # \the\textwidth in LaTeX and put the value here in inches.
 TEXT_WIDTH = 5.91          # in — full text width
 HALF_WIDTH = 2.87          # in — two figures side by side
-GOLDEN = 0.618
+
+# Aspect ratios (height / width).
+GOLDEN = 0.618             # square-ish plots (sweeps, spectra)
+WIDE   = 0.32            # long/short time-series plots (growth, displacement)
 
 DEBUG_HEADER = False       # True => parameter banner across the top
 FIG_DIR = Path("figures")
@@ -93,17 +96,17 @@ def use_thesis_style() -> None:
         "font.family": "serif",
         "font.serif": serif,
         "mathtext.fontset": mathfont,
-        "font.size": 9,
-        "axes.labelsize": 9,
-        "axes.titlesize": 9,
-        "legend.fontsize": 8,
-        "xtick.labelsize": 8,
-        "ytick.labelsize": 8,
+        "font.size": 8,
+        "axes.labelsize": 8,
+        "axes.titlesize": 8,
+        "legend.fontsize": 7,
+        "xtick.labelsize": 7,
+        "ytick.labelsize": 7,
 
         "axes.linewidth": 0.6,
         "axes.grid": True,
         "grid.linewidth": 0.4,
-        "grid.alpha": 0.3,
+        "grid.alpha": 0.25,
         "grid.color": C["neutral"],
 
         "lines.linewidth": 1.0,
@@ -117,8 +120,8 @@ def use_thesis_style() -> None:
         "ytick.major.width": 0.6,
 
         "legend.frameon": True,
-        "legend.framealpha": 0.9,
-        "legend.edgecolor": "0.8",
+        "legend.framealpha": 0.85,
+        "legend.edgecolor": "0.85",
         "legend.borderpad": 0.4,
 
         "figure.dpi": 120,
@@ -159,7 +162,7 @@ def save_figure(fig, stem: str, header: str | None = None) -> Path:
     return pdf_path
 
 
-def _new(width: float = TEXT_WIDTH, ratio: float = GOLDEN):
+def _new(width: float = TEXT_WIDTH, ratio: float = WIDE):
     fig, ax = plt.subplots(figsize=(width, width * ratio))
     return fig, ax
 
@@ -192,24 +195,28 @@ def fig_displacement(t, w_c, z1, z2=None, *, stem="displacement",
         waveform once there are hundreds of oscillations; a zoomed inset
         of the late-time response is usually the more informative figure.
     """
-    fig, ax = _new(width)
+    fig, ax = _new(width, ratio=WIDE)
     sl = slice(None)
     if t_window is not None:
         sl = (t >= t_window[0]) & (t <= t_window[1])
 
     scale = 1e3  # metres -> millimetres
     n = np.asarray(t)[sl].size
-    ax.plot(t[sl], np.asarray(w_c)[sl] * scale, color=C["string"],
-            label=r"$w_c(t)$  string at contact", rasterized=_raster(n))
-    ax.plot(t[sl], np.asarray(z1)[sl] * scale, color=C["mass1"],
-            label=r"$z_1(t)$  contact mass", rasterized=_raster(n))
+    # mass trace first (thicker, the main object); string on top, thinner
+    # — the two nearly coincide, so this ordering reads cleaner.
+    ax.plot(t[sl], np.asarray(z1)[sl] * scale, color=C["mass1"], lw=1.0,
+            label=r"$z_1(t)$  contact mass", rasterized=_raster(n), zorder=2)
+    ax.plot(t[sl], np.asarray(w_c)[sl] * scale, color=C["string"], lw=0.7,
+            label=r"$w_c(t)$  string at contact", rasterized=_raster(n),
+            zorder=3)
     if z2 is not None:
-        ax.plot(t[sl], np.asarray(z2)[sl] * scale, color=C["mass2"],
-                label=r"$z_2(t)$  secondary mass", rasterized=_raster(n))
+        ax.plot(t[sl], np.asarray(z2)[sl] * scale, color=C["mass2"], lw=0.9,
+                label=r"$z_2(t)$  secondary mass", rasterized=_raster(n),
+                zorder=1)
 
     ax.set_xlabel(r"Time $t$ [s]")
     ax.set_ylabel(r"Displacement [mm]")
-    ax.legend(loc="upper left")
+    ax.legend(loc="upper right", handlelength=1.6)
     ax.margins(x=0.01)
     return fig, save_figure(fig, stem, header)
 
@@ -217,7 +224,7 @@ def fig_displacement(t, w_c, z1, z2=None, *, stem="displacement",
 def fig_contact_force(t, F, *, stem="contact_force", header=None,
                       t_window=None, width=TEXT_WIDTH):
     """Contact-force perturbation time history (linear scale)."""
-    fig, ax = _new(width)
+    fig, ax = _new(width, ratio=WIDE)
     sl = slice(None)
     if t_window is not None:
         sl = (t >= t_window[0]) & (t <= t_window[1])
@@ -232,44 +239,53 @@ def fig_contact_force(t, F, *, stem="contact_force", header=None,
 
 
 def fig_growth(t, F, g, *, stem="growth_rate", header=None,
-               width=TEXT_WIDTH, annotate=True):
-    """Log-envelope growth figure: |F_tr|, upper hull, fitted exponential.
+               width=TEXT_WIDTH, decades=None):
+    """Log-envelope growth figure: faded |F_tr|, upper hull, fitted line.
 
-    This is the evidence figure — it is what demonstrates the instability
-    and where Re(lambda) comes from.
+    The evidence figure: it shows the instability and where Re(lambda)
+    comes from. The numeric rate is intentionally NOT annotated on the
+    axes — it belongs in the caption or table.
 
     Parameters
     ----------
     g : dict
-        Output of ``main.growth_rate``: needs ``env``, ``hull``, and (if a
+        Output of ``main.growth_rate``: needs ``env``, ``hull`` and (if a
         fit succeeded) ``slope``, ``intercept``, ``t_hull``.
+    decades : float or None
+        How many decades of y-range to show below the envelope maximum.
+        Clips the empty low-amplitude noise so the envelope fills the
+        plot. Set to None to show the full range (use for a very strong
+        instability where the whole climb is the point).
     """
-    fig, ax = _new(width, ratio=0.55)
+    fig, ax = _new(width, ratio=WIDE)
 
     n = np.asarray(t).size
-    ax.semilogy(t, g["env"], color=C["string"], lw=0.4, alpha=0.6,
-                rasterized=_raster(n), label=r"$|F_{\mathrm{tr}}(t)|$")
-    ax.semilogy(t, g["hull"], color=C["envelope"], lw=1.1,
-                rasterized=_raster(n), label="Upper envelope")
+    hull = np.asarray(g["hull"])
+
+    # raw trace: faint hairline, pure context
+    ax.semilogy(t, g["env"], color=C["string"], lw=0.3, alpha=0.35,
+                rasterized=_raster(n), label=r"$|F_{\mathrm{tr}}(t)|$",
+                zorder=1)
+    # envelope: the hero line
+    ax.semilogy(t, hull, color=C["envelope"], lw=1.4,
+                rasterized=_raster(n), label="Envelope", zorder=3)
 
     if g.get("slope") is not None:
-        t_h = g["t_hull"]
+        t_h = np.asarray(g["t_hull"])
         ax.semilogy(t_h, np.exp(g["intercept"] + g["slope"] * t_h),
-                    color=C["fit"], ls="--", lw=1.0,
-                    label=r"Fit, $\mathrm{Re}(\lambda)$ = "
-                          rf"${g['slope']:+.4f}$ s$^{{-1}}$")
-        if annotate:
-            err = g.get("slope_err", 0.0)
-            ax.text(0.03, 0.94,
-                    rf"$\mathrm{{Re}}(\lambda) = {g['slope']:+.4f}"
-                    rf" \pm {err:.4f}$ s$^{{-1}}$",
-                    transform=ax.transAxes, va="top", ha="left",
-                    bbox=dict(boxstyle="round,pad=0.3", fc="white",
-                              ec="0.8", lw=0.5))
+                    color=C["fit"], ls="--", lw=1.1, zorder=4, label="Fit")
+
+    # clip y-range to where the envelope actually lives: from `decades`
+    # below the hull max up to a touch above it. Removes the empty
+    # low-amplitude band full of beat-null spikes.
+    if decades is not None:
+        hi = np.nanmax(hull)
+        lo = hi / 10.0 ** decades
+        ax.set_ylim(lo, hi * 2.0)
 
     ax.set_xlabel(r"Time $t$ [s]")
     ax.set_ylabel(r"$|F_{\mathrm{tr}}|$ [N]")
-    ax.legend(loc="lower right")
+    ax.legend(loc="best", handlelength=1.6)
     ax.margins(x=0.01)
     return fig, save_figure(fig, stem, header)
 
@@ -417,7 +433,7 @@ def fig_stability_sweep(td_m1, td_rate, td_err=None, *,
     tongue : tuple of float or None
         ``(m1_lo, m1_hi)`` — shaded as the predicted unstable band.
     """
-    fig, ax = _new(width, ratio=0.55)
+    fig, ax = _new(width, ratio=GOLDEN)
 
     if tongue is not None:
         lo, hi = tongue

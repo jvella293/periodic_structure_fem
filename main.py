@@ -63,21 +63,22 @@ except ImportError:
 # oscillator modes: with a soft k01 the sqrt(k01/m1) mode is slow. See the
 # "Numerical resolution" block printed at runtime. Verify any dt increase
 # with the refinement protocol: halve dt, confirm Re(lambda) is unchanged.
-dt = 5e-4
+dt = 2e-4
 
 # --- string ---
-tension = 1.0e4
-damp_string = 0.0   # no string damping in the PDE
-m = 1.1             # mass per unit length of the string [kg/m]
+tension = 2.0e4
+damp_string = 0   # no string damping in the PDE
+m = 1.35          # mass per unit length of the string [kg/m]
 
 # --- derived wave speed and dimensional velocity ---
 c = np.sqrt(tension / m)     # string wave speed [m/s]
-V = 19.777                   # dimensional speed taken from the Floquet point
-Vc = V / c
+Vc = 0.201909547738693
+V = Vc * c                   # dimensional speed taken from the Floquet point
+
 
 # --- contact oscillator: 2 DOF (names match the Floquet code) ---
-model = "2dof"      # "sdof" | "2dof" (m2 = mu*m1) | "2dof_fixedM2" (m2 fixed)
-m1 = 147.741        # contact mass [kg] — CENTRE of the Floquet tongue
+model = "sdof"      # "sdof" | "2dof" (m2 = mu*m1) | "2dof_fixedM2" (m2 fixed)
+m1 = 131.785126624781        # contact mass [kg] — lower EDGE of the Floquet tongue
 mu = 0.5            # mass ratio m2/m1        (used only when model = "2dof")
 m2_fixed = 50.0     # secondary mass [kg]     (used only when model = "2dof_fixedM2")
 
@@ -94,8 +95,8 @@ m2_fixed = 50.0     # secondary mass [kg]     (used only when model = "2dof_fixe
 #
 # For combination resonances the response has TWO components, at omega_1 and
 # omega_2 — there is no single "response frequency", so none is reported.
-TONGUE = (147.7429, 168.7682)      # (m1_lo, m1_hi) bracketing the tongue
-TONGUE_TYPE = "combination_sum"    # "simple" | "combination_sum" | "combination_diff"
+TONGUE = (77.6923883751325, 131.785126624781)     # was None
+TONGUE_TYPE = "simple"    # "simple" | "combination_sum" | "combination_diff"
 TONGUE_P = 1                       # harmonic p of the support-passing frequency
 TONGUE_N = 2                       # subharmonic order n (TONGUE_TYPE="simple" only)
 TONGUE_MODE = 0                    # which omega_i (0 or 1) for "simple"
@@ -116,7 +117,7 @@ elif model == "2dof_fixedM2":
 else:
     raise ValueError(f"unknown model {model!r}")
 
-k01 = 1.0e4         # contact spring (string -- m1) [N/m]
+k01 = 1.0e5         # contact spring (string -- m1) [N/m]
 k12 = 1.0e3         # secondary spring (m1 -- m2) [N/m]
 c12 = 0.0           # secondary viscous damping [N s/m] (0 = undamped validation)
 
@@ -124,12 +125,12 @@ if model == "sdof":
     k12 = c12 = 0.0     # no secondary spring exists in the 1-DOF model
 
 # --- periodic section ---
-spacing = 10.0
-n_cells = 800
-element_length_requested = 0.1
+spacing = 6.5
+n_cells = 1407
+element_length_requested = 0.05
 
 # --- vertical supports at periodic positions ---
-Kv = 4.0e3
+Kv = 6.15e4
 phi = 0                                        # support loss factor (0 = undamped validation)
 omega_ref = 2.0 * np.pi * V / spacing
 
@@ -149,9 +150,9 @@ FIG_DIR = Path("figures")
 # Each figure is exported individually as a vector PDF (plus a PNG for
 # browsing). Styling, palette and sizing live in thesis_plots.py; set
 # thesis_plots.DEBUG_HEADER = True there to get the parameter banner back.
-FIG_STEM = "combination_p1"   # filename prefix; None => auto tag from params
+FIG_STEM = None   # filename prefix; None => auto tag from params
 SHOW_Z2 = True                # include z2(t) in the displacement figure
-ZOOM_PERIODS = 8              # also export a zoom on the last N passing
+ZOOM_PERIODS = 0              # also export a zoom on the last N passing
                               # periods; set 0 to skip
 SHOW_FIGURES = True           # plt.show() at the end
 
